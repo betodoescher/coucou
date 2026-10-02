@@ -21,7 +21,8 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
-  | "greeting";
+  | "greeting"
+  | "todos";
 
 export type BotStateName =
   | "idle"
@@ -86,6 +87,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // Height follows the rows (todosHeight); Mochi stays by the chips and the field.
+  todos: { height: 178, botX: 46, botY: 86, botDiameter: 40, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -97,10 +100,16 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/** To-do view grows with its rows, then scrolls. */
+export function todosHeight(rows: number): number {
+  return Math.min(300, 150 + Math.max(1, rows) * 28);
+}
+
+/** `count` is the chat's messages, or the to-do view's rows. */
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
-  chatCount = 0,
+  count = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -110,7 +119,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(count)
+        : view === "todos" ? todosHeight(count)
+        : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

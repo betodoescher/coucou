@@ -6,6 +6,10 @@ import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
+import { Todos } from "../core/todoStore";
+import {
+  LIST_COLORS, addList, clearCompleted, removeList, updateList, type TodoDoc, type TodoList,
+} from "../core/todos";
 
 let settings: Settings = { ...DEFAULT_SETTINGS };
 let version = "";
@@ -540,6 +544,96 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
 }
 
+// ── Tasks section ─────────────────────────────────────────────────────────────
+
+function tasksSection(): HTMLElement {
+  const lists = h("div", {});
+  const feedback = h("div", {});
+  const clearDone = h("button", { text: "Clear completed" });
+  let key = "";
+
+  async function commit(next: TodoDoc) {
+    clear(feedback);
+    const err = await Todos.commit(next);
+    if (err) feedback.append(h("div", { class: "notice err", text: err.replace(/^Error:\s*/, "") }));
+  }
+
+  const newName = h("input", {
+    type: "text", placeholder: "New list", maxlength: "60", style: "flex:1 1 auto;min-width:0",
+  }) as HTMLInputElement;
+  const addBtn = h("button", { text: "Add list" });
+  const addOne = () => {
+    if (!newName.value.trim()) return;
+    void commit(addList(Todos.doc, newName.value));
+    newName.value = "";
+  };
+  addBtn.addEventListener("click", addOne);
+  newName.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") addOne();
+  });
+  clearDone.addEventListener("click", () => void commit(clearCompleted(Todos.doc)));
+
+  function listRow(list: TodoList): HTMLElement {
+    const swatch = h("button", {
+      title: "Change colour",
+      style: `width:22px;height:22px;padding:0;border-radius:50%;flex:0 0 22px;background:${list.color}`,
+      onclick: () => {
+        const next = LIST_COLORS[(LIST_COLORS.indexOf(list.color) + 1) % LIST_COLORS.length];
+        void commit(updateList(Todos.doc, list.id, { color: next }));
+      },
+    });
+    const name = h("input", {
+      type: "text", value: list.name, maxlength: "60", style: "flex:1 1 auto;min-width:0",
+    }) as HTMLInputElement;
+    name.addEventListener("change", () => {
+      if (name.value.trim()) void commit(updateList(Todos.doc, list.id, { name: name.value.trim() }));
+      else name.value = list.name;
+    });
+    const count = Todos.doc.items.filter((i) => i.listId === list.id && !i.done).length;
+    return h(
+      "div",
+      { class: "row" },
+      swatch,
+      name,
+      h("span", { class: "hint", text: count === 1 ? "1 open" : `${count} open` }),
+      h("button", {
+        class: "danger",
+        text: "Delete",
+        title: "Its tasks stay, without a list",
+        onclick: () => void commit(removeList(Todos.doc, list.id)),
+      }),
+    );
+  }
+
+  function render() {
+    const doc = Todos.doc;
+    const done = doc.items.filter((i) => i.done).length;
+    const k = JSON.stringify([doc.lists, doc.items.map((i) => [i.listId, i.done])]);
+    if (k === key) return;
+    key = k;
+    clear(lists);
+    for (const l of doc.lists) lists.append(listRow(l));
+    clearDone.disabled = done === 0;
+    clearDone.textContent = done ? `Clear completed (${done})` : "Clear completed";
+  }
+  Todos.subscribe(render);
+  render();
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Tasks" })),
+    h("span", {
+      class: "hint",
+      text: "In the island's Tasks tab, type a task and press Enter. !1, !2, !3 set the priority, #name puts it in a list (made if new), @today, @tomorrow, @fri or @2026-10-05 set the day.",
+    }),
+    lists,
+    h("div", { class: "row" }, newName, addBtn),
+    h("div", { class: "row" }, clearDone),
+    feedback,
+  );
+}
+
 // ── General section ───────────────────────────────────────────────────────────
 
 function generalSection(): HTMLElement {
@@ -617,6 +711,7 @@ async function main() {
   };
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+  await Todos.init();
 
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
@@ -634,6 +729,7 @@ async function main() {
     cursorSection((await Bridge.secretPresent("cursor-api-key")) ?? false),
     kiroSection(),
     integrationsSection(present),
+    tasksSection(),
     generalSection(),
     h("div", {
       class: "hint",

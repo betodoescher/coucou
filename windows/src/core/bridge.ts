@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
+import type { TodoDoc } from "./todos";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -104,6 +105,9 @@ export const Bridge = {
   kiroStatus: () => call<CursorStatus>("kiro_status"),
   /** [id, label] pairs the user's Kiro plan can use. */
   kiroModels: () => call<[string, string][]>("kiro_models"),
+  todosLoad: () => call<TodoDoc>("todos_load"),
+  /** Validated and written atomically by Rust, then sent to every window as "todos-changed". */
+  todosSave: (doc: TodoDoc) => callOrThrow<void>("todos_save", { doc }),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */

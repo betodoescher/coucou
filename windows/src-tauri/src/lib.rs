@@ -12,6 +12,7 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod todos;
 mod tray;
 
 use std::process::Command;
@@ -344,6 +345,21 @@ async fn kiro_models() -> Vec<(String, String)> {
     kiro_chat::models().await
 }
 
+// ── To-do list ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn todos_load() -> todos::TodoDoc {
+    todos::load()
+}
+
+/// Saves the whole list and hands it to every window (island ⇄ settings window).
+#[tauri::command]
+fn todos_save(app: AppHandle, doc: todos::TodoDoc) -> Result<(), String> {
+    todos::save(&doc)?;
+    let _ = app.emit("todos-changed", doc);
+    Ok(())
+}
+
 #[tauri::command]
 async fn cursor_status() -> cursor_chat::CursorStatus {
     cursor_chat::status().await
@@ -513,6 +529,8 @@ pub fn run() {
             cursor_login,
             kiro_status,
             kiro_models,
+            todos_load,
+            todos_save,
             ingest_file,
             secret_present,
             secret_set,
