@@ -28,6 +28,8 @@ export interface BootInfo {
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
   cursorPoll: boolean;
+  /** False where the compositor pins the island to the top edge (layer-shell). */
+  islandMovable: boolean;
 }
 
 export const Bridge = {
@@ -49,6 +51,13 @@ export const Bridge = {
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),
 
   reposition: () => call<void>("reposition"),
+
+  /** One drag step, in logical pixels. */
+  moveIsland: (dx: number, dy: number) => call<void>("move_island", { dx, dy }),
+  /** End of a drag: Rust remembers where the island now is. */
+  saveIslandPosition: () => call<void>("save_island_position"),
+  /** Back to the top centre of the display. */
+  resetIslandPosition: () => call<void>("reset_island_position"),
 
   openUrl: (url: string) => call<void>("open_url", { url }),
 
@@ -85,6 +94,12 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
+  /** Whether the Cursor CLI is installed and signed in. */
+  cursorStatus: () => call<CursorStatus>("cursor_status"),
+  /** [id, label] pairs the user's Cursor plan can use. */
+  cursorModels: () => call<[string, string][]>("cursor_models"),
+  /** Opens Cursor's browser sign-in. */
+  cursorLogin: () => callOrThrow<void>("cursor_login"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -116,6 +131,13 @@ export interface DroppedFile {
   name: string;
   path: string;
   size: number;
+}
+
+export interface CursorStatus {
+  /** Path of the CLI, or null when it is not installed. */
+  cli: string | null;
+  status: string;
+  loggedIn: boolean;
 }
 
 export interface HookStatus {
