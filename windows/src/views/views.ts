@@ -10,6 +10,12 @@ import { Bridge, type CursorStatus } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
+import { buildTodos } from "./todos";
+import { Todos } from "../core/todoStore";
+import {
+  PRIORITY_COLORS, dayOf, dueCount, dueLabel, isOverdue, toggleTodo, upNext, type TodoItem,
+} from "../core/todos";
+import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
@@ -81,6 +87,13 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
+  const todoCount = h("span", { class: "tab-count" });
+  const tabTodos = h(
+    "button",
+    { class: "tab tab-todos", title: "Tasks", onclick: () => go("todos") },
+    svg(ICONS.checklist, 14, { stroke: 1.8 }),
+    todoCount,
+  );
   const tabDrop = h("button", { class: "tab", title: "Drop", onclick: () => go("upload") }, svg(ICONS.plus, 13));
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
@@ -94,7 +107,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const el = h(
     "div",
     { id: "header" },
-    h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
+    h("div", { class: "tabs" }, tabHome, tabChat, tabTodos, tabDrop),
     h("div", { class: "header-actions" }, gearBtn, soundBtn),
   );
 
@@ -104,6 +117,9 @@ export function buildHeader(actions: ViewActions): ViewHost {
       const v = State.view;
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
+      tabTodos.classList.toggle("on", v === "todos");
+      const due = dueCount(Todos.doc, dayOf(new Date()));
+      todoCount.textContent = due ? String(Math.min(due, 99)) : "";
       tabDrop.classList.toggle("on", v === "upload");
       gearBtn.classList.toggle("on", v === "settings");
       clear(gearBtn);
@@ -129,7 +145,9 @@ function buildOverview(actions: ViewActions): ViewHost {
   );
   const left = card(null, leftBody, jump);
   const pills = h("div", { class: "pills" });
-  const right = card(null, pills);
+  const upNextBox = h("div", { class: "up-next" });
+  const right = card(null, pills, upNextBox);
+  let upNextKey = "";
 
   const el = h("div", { class: "view overview" },
     h("div", { class: "left" }, left),
@@ -223,8 +241,69 @@ function buildOverview(actions: ViewActions): ViewHost {
         for (const t of others) pills.append(buildPill(t, actions));
         pruneMiniBots();
       }
+
+      // With no other agent to show, the card lists the next tasks instead.
+      const showTasks = others.length === 0;
+      pills.style.display = showTasks ? "none" : "";
+      upNextBox.style.display = showTasks ? "" : "none";
+      if (showTasks) {
+        const now = new Date();
+        const today = dayOf(now);
+        const next = upNext(Todos.doc, 3);
+        const key = `${today}|${dueCount(Todos.doc, today)}|${JSON.stringify(next)}`;
+        if (key !== upNextKey) {
+          upNextKey = key;
+          clear(upNextBox);
+          upNextBox.append(buildUpNext(next, today, now, actions));
+        }
+      }
     },
   };
+}
+
+function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewActions): DocumentFragment {
+  const due = dueCount(Todos.doc, today);
+  const open = () => {
+    actions.blip();
+    actions.setView("todos");
+  };
+  const frag = document.createDocumentFragment();
+  frag.append(
+    h(
+      "button",
+      { class: "up-next-head", title: "Open tasks", onclick: open },
+      svg(ICONS.checklist, 12, { stroke: 1.8 }),
+      h("span", { text: "Tasks" }),
+      due ? h("span", { class: "tab-count", text: String(Math.min(due, 99)) }) : null,
+      h("div", { class: "grow" }),
+      svg(ICONS.arrowUpRight, 8),
+    ),
+  );
+  if (next.length === 0) {
+    frag.append(h("div", { class: "up-next-empty", text: "All clear. Add a task from the ✓ tab." }));
+  }
+  for (const item of next) {
+    frag.append(
+      h(
+        "div",
+        { class: "up-next-row" },
+        h("button", {
+          class: "todo-check",
+          title: "Done",
+          style: `border-color:${item.priority ? PRIORITY_COLORS[item.priority] : "var(--dim-3)"}`,
+          onclick: () => {
+            Sound.play("pop");
+            void Todos.commit(toggleTodo(Todos.doc, item.id, new Date()));
+          },
+        }),
+        h("button", { class: "todo-title", text: item.title, title: "Open tasks", onclick: open }),
+        item.due
+          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: dueLabel(item.due, now) })
+          : null,
+      ),
+    );
+  }
+  return frag;
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
@@ -528,6 +607,7 @@ export function buildViews(
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("todos", buildTodos(onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

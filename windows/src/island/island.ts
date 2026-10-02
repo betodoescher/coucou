@@ -17,6 +17,7 @@ import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from ".
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
+import { todoRowCount } from "../views/todos";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 
@@ -454,7 +455,8 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const count = State.view === "todos" ? todoRowCount() : State.chatHistory.length;
+    const { w, h } = islandSize(State.mode, State.view, count);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -878,15 +880,16 @@ export class Island {
       if (on) view.sync();
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // Only views with a text field (a focus()) let the island take keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const typed = (v: IslandViewName | null) => (v ? !!this.views.get(v)?.focus : false);
+      const wasTyped = typed(this.lastSyncedView);
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (typed(State.view)) {
+        const view = this.views.get(State.view);
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
-      } else if (wasChat) {
+        window.setTimeout(() => view?.focus?.(), 120);
+      } else if (wasTyped) {
         void Bridge.focusWindow(false);
       }
     }

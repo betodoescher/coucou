@@ -182,6 +182,14 @@ What changes on Linux:
   once, then turn Kiro on in Settings → Chat. It runs
   `kiro-cli chat --no-interactive --trust-tools=` (no tools) in an empty
   private folder.
+- **Tasks**: the checklist tab in the island. Type a task, pick a day and a
+  priority, press Enter; click a task to edit it. As shortcuts, `!1`–`!3` set
+  the priority, `#name` a list (made if new), `@today`, `@tomorrow`, `@fri` or
+  `@2026-10-05` the day. With no other agent pill, the overview's right card
+  lists the next three tasks. Lists and "Clear completed" are
+  in Settings → Tasks. Saved in `todos.json` next to the inbox, written
+  atomically; an unreadable file is set aside as `todos.json.broken-…`.
+  `npm run check` runs the quick-add and sorting checks.
 - **Several chats at once**: everything turned on in Settings → Chat is tried
   in order (Cursor, Kiro, then the Claude API) until one answers, so running
   out of credits on one plan hands the chat to the next.
