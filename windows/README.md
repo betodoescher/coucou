@@ -176,8 +176,15 @@ What changes on Linux:
   remembered; tray → "Move island back to the top" puts it back. Not on
   layer-shell compositors, which pin it to the top edge.
 - **Chat with your Cursor plan**: install the Cursor CLI, then Settings →
-  Cursor → "Sign in with Cursor" and pick "Cursor (your plan)". It runs
-  `agent -p --mode ask` (read-only) in an empty private folder.
+  Cursor → "Sign in with Cursor", then turn Cursor on in Settings → Chat. It
+  runs `agent -p --mode ask` (read-only) in an empty private folder.
+- **Chat with your Kiro plan**: install the Kiro CLI, run `kiro-cli login`
+  once, then turn Kiro on in Settings → Chat. It runs
+  `kiro-cli chat --no-interactive --trust-tools=` (no tools) in an empty
+  private folder.
+- **Several chats at once**: everything turned on in Settings → Chat is tried
+  in order (Cursor, Kiro, then the Claude API) until one answers, so running
+  out of credits on one plan hands the chat to the next.
 - **Click-through** is the window's input region, kept equal to the island
   shape, so the compositor sends every other click to what is underneath.
 - **Mochi's eyes** follow the pointer only while it is over the island: Wayland

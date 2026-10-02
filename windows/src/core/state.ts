@@ -92,9 +92,10 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
-  /** Who answers in the chat: the Anthropic API, or the Cursor CLI on the user's plan. */
-  chatProvider: "anthropic" | "cursor";
+  /** Who may answer in the chat; Rust tries Cursor, then Kiro, then the API, until one answers. */
+  chatProviders: ("anthropic" | "cursor" | "kiro")[];
   cursorModel: string;
+  kiroModel: string;
   /** Where the island was dragged to; null = top centre. Written by Rust only. */
   islandOffset: [number, number] | null;
 }
@@ -111,8 +112,9 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
-  chatProvider: "anthropic",
+  chatProviders: ["anthropic"],
   cursorModel: "auto",
+  kiroModel: "auto",
   islandOffset: null,
 };
 
