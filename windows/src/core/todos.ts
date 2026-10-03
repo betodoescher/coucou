@@ -24,13 +24,22 @@ export interface TodoItem {
   createdAt: number;
 }
 
+export interface Note {
+  id: string;
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface TodoDoc {
   version: 1;
   lists: TodoList[];
   items: TodoItem[];
+  /** Quick notes of the Today tab; absent in lists saved before them. */
+  notes?: Note[];
 }
 
-export const EMPTY_DOC: TodoDoc = { version: 1, lists: [], items: [] };
+export const EMPTY_DOC: TodoDoc = { version: 1, lists: [], items: [], notes: [] };
 
 export const LIST_COLORS = ["#3B82F6", "#22C55E", "#F59E0B", "#EF4444", "#A855F7", "#EC4899", "#14B8A6"];
 
@@ -341,6 +350,45 @@ export function removeTodo(doc: TodoDoc, id: string): TodoDoc {
 
 export function clearCompleted(doc: TodoDoc): TodoDoc {
   return { ...doc, items: doc.items.filter((i) => !i.done) };
+}
+
+// ── Notes ─────────────────────────────────────────────────────────────────────
+
+/** Last touched first. */
+export function sortedNotes(doc: TodoDoc): Note[] {
+  return [...(doc.notes ?? [])].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/** Null when the text is blank. */
+export function addNote(doc: TodoDoc, text: string, now: Date): TodoDoc | null {
+  const t = text.trim();
+  if (!t) return null;
+  const at = now.getTime();
+  return { ...doc, notes: [...(doc.notes ?? []), { id: newId(), text: t, createdAt: at, updatedAt: at }] };
+}
+
+/** Clearing a note's text deletes it; unchanged text keeps its place. */
+export function editNote(doc: TodoDoc, id: string, text: string, now: Date): TodoDoc {
+  const t = text.trim();
+  if (!t) return removeNote(doc, id);
+  return {
+    ...doc,
+    notes: (doc.notes ?? []).map((n) => (n.id === id && n.text !== t ? { ...n, text: t, updatedAt: now.getTime() } : n)),
+  };
+}
+
+export function removeNote(doc: TodoDoc, id: string): TodoDoc {
+  return { ...doc, notes: (doc.notes ?? []).filter((n) => n.id !== id) };
+}
+
+/** "now", "5m", "3h", "2d", then "Oct 5". */
+export function agoLabel(at: number, now: Date): string {
+  const min = Math.floor((now.getTime() - at) / 60_000);
+  if (min < 1) return "now";
+  if (min < 60) return `${min}m`;
+  if (min < 24 * 60) return `${Math.floor(min / 60)}h`;
+  if (min < 7 * 24 * 60) return `${Math.floor(min / (24 * 60))}d`;
+  return new Date(at).toLocaleDateString("en", { month: "short", day: "numeric" });
 }
 
 export function addList(doc: TodoDoc, name: string): TodoDoc {

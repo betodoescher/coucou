@@ -76,7 +76,10 @@ async function main() {
     reminderTimer = window.setTimeout(() => {
       lastRing = at.getTime();
       const late = Date.now() - at.getTime() > 30 * 60_000;
-      if (!State.paused && !late && ringsAt(Todos.doc, at).length) island.alert("todos");
+      if (!State.paused && !late && ringsAt(Todos.doc, at).length) {
+        State.todayTab = "tasks";
+        island.alert("todos");
+      }
       scheduleReminder();
     }, at.getTime() - Date.now());
   };

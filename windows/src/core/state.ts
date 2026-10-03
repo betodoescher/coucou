@@ -9,6 +9,9 @@ export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
 export const TODO_PILL_ID = "todos";
 export type PillBadge = "approval" | "finished" | "error";
 
+/** The open panel of the Today tab. */
+export type TodayTab = "tasks" | "notes";
+
 export interface AgentTask {
   id: string;
   name: string;
@@ -131,6 +134,7 @@ type Listener = () => void;
 class AppState {
   mode: IslandMode = "hidden";
   view: IslandViewName = "overview";
+  todayTab: TodayTab = "tasks";
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;
