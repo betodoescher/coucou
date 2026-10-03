@@ -6,8 +6,10 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { State, type AgentTask } from "../core/state";
+import { HOME_ID, State, isAgentPill, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
+import { Todos } from "../core/todoStore";
+import { dayOf, upNext, whenLabel } from "../core/todos";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -57,23 +59,11 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const info = State.integrations[task.id];
   const configured = info?.configured ?? false;
   const error = info?.error ?? null;
-  // The Claude Code pill is about hooks, not a key — the macOS wording would be
-  // misleading here.
-  const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
-  const label = error ?? (configured ? "Connected · loading…" : missing);
+  const label = error ?? (configured ? "Connected · loading…" : "Key not configured");
   const statusColor = error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
-  if (task.id === "integration_claude") {
-    actions.append(
-      h("button", {
-        class: "link-btn",
-        style: `color:${task.color}b3`,
-        text: "Open Visual Studio Code",
-        onclick: () => void Bridge.openInVSCode(task.sessionCwd ?? null),
-      }),
-    );
-  } else if (task.id === "integration_n8n") {
+  if (task.id === "integration_n8n") {
     actions.append(
       h("button", {
         class: "link-btn",
@@ -110,7 +100,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   return h(
     "div",
     { class: "int-card" },
-    header(task.color, task.id === "integration_claude" ? "VS Code" : task.name, "Integration"),
+    header(task.color, task.name, "Integration"),
     h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
     actions,
   );
@@ -434,7 +424,89 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
+// ── Home ──────────────────────────────────────────────────────────────────────
+
+/** WMO weather code → icon and word (Open-Meteo `weather_code`). */
+function sky(code: number, isDay: boolean): [string, string] {
+  if (code <= 1) return [isDay ? ICONS.sun : ICONS.moon, "Clear"];
+  if (code <= 3) return [ICONS.cloud, "Cloudy"];
+  if (code === 45 || code === 48) return [ICONS.cloud, "Fog"];
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return [ICONS.snow, "Snow"];
+  if (code >= 95) return [ICONS.storm, "Storm"];
+  return [ICONS.rain, "Rain"];
+}
+
+const deg = (v: unknown) => (typeof v === "number" ? `${Math.round(v)}°` : "–");
+
+function homeSummary() {
+  const now = new Date();
+  const today = dayOf(now);
+  const next = upNext(Todos.doc, 1)[0] ?? null;
+  const habits = Todos.doc.habits ?? [];
+  const agents = State.tasks.filter((t) => isAgentPill(t.id));
+  return {
+    today,
+    next: next ? { title: next.title, when: next.due ? whenLabel(next, now) : "" } : null,
+    habitsDone: habits.filter((x) => x.days.includes(today)).length,
+    habits: habits.length,
+    agents: agents.length,
+    waiting: agents.filter((t) => t.state === "approval" || t.pillBadge === "approval").length,
+    weather: State.integrations.weather ?? null,
+  };
+}
+
+/** Changes whenever the home card would draw differently. */
+export function homeKey(): string {
+  return JSON.stringify(homeSummary());
+}
+
+function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
+  const s = homeSummary();
+  const w = (s.weather?.data ?? {}) as Record<string, unknown>;
+  const hasWeather = typeof w.temp === "number";
+  const city = State.settings.weatherCity.trim();
+
+  const now = hasWeather
+    ? (() => {
+        const [icon, word] = sky(Number(w.code ?? 0), w.isDay !== false);
+        return h("span", { class: "home-now", title: word }, svg(icon, 13, { stroke: 1.8 }), h("span", { text: deg(w.temp) }));
+      })()
+    : undefined;
+  const head = header(task.color, hasWeather ? String(w.city ?? city) : "Today", "", now);
+
+  const weatherLine = hasWeather
+    ? h("div", { class: "int-status" }, h("span", {
+        text: `H ${deg(w.max)} · L ${deg(w.min)}${typeof w.rain === "number" ? ` · Rain ${w.rain}%` : ""}`,
+      }))
+    : city && s.weather?.error
+      ? h("div", { class: "int-status" }, dot("#F4505E", 5), h("span", { class: "int-name", text: s.weather.error }))
+      : city
+        ? h("div", { class: "int-status" }, h("span", { text: "Loading weather…" }))
+        : h("div", { class: "int-status" }, h("button", {
+            class: "link-btn", style: "color:#8e939c;padding:0", text: "Set a city for weather…", onclick: openSettings,
+          }));
+
+  const taskLine = h("div", { class: "int-status" },
+    svg(ICONS.checklist, 11, { stroke: 1.8 }),
+    s.next
+      ? h("span", { class: "int-name", text: s.next.when ? `${s.next.when} · ${s.next.title}` : s.next.title })
+      : h("span", { text: "No open tasks" }),
+  );
+
+  const bits: string[] = [];
+  if (s.habits) bits.push(`Habits ${s.habitsDone}/${s.habits}`);
+  bits.push(s.agents ? `${s.agents} agent${s.agents > 1 ? "s" : ""}` : "No agents");
+  if (s.waiting) bits.push(`${s.waiting} waiting`);
+  const statusLine = h("div", { class: "int-status" },
+    dot(s.waiting ? "#F5A524" : s.agents ? "#22C55E" : "#6b7079", 5),
+    h("span", { class: "int-name", text: bits.join(" · ") }),
+  );
+
+  return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine);
+}
+
 export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+  if (task.id === HOME_ID) return homeCard(task, hooks.openSettings);
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity

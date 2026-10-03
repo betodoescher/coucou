@@ -40,6 +40,9 @@ pub struct Settings {
     /// Rust: save_settings never takes it from a page.
     #[serde(default)]
     pub island_offset: Option<(f64, f64)>,
+    /// City for the home card's weather (Open-Meteo). Empty: no weather, no request.
+    #[serde(default)]
+    pub weather_city: String,
 }
 
 fn default_true() -> bool {
@@ -85,6 +88,7 @@ impl Default for Settings {
             kiro_model: default_kiro_model(),
             agent_approvals: false,
             island_offset: None,
+            weather_city: String::new(),
         }
     }
 }

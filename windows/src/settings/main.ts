@@ -695,6 +695,16 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  const city = h("input", {
+    type: "text", placeholder: "São Paulo, Brazil", maxlength: "80",
+    value: settings.weatherCity, style: "width:180px",
+  }) as HTMLInputElement;
+  city.addEventListener("change", () => {
+    settings.weatherCity = city.value.trim();
+    city.value = settings.weatherCity;
+    void save();
+  });
+
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
     h("option", { value: "primary", text: "Main display" }),
@@ -724,6 +734,11 @@ function generalSection(): HTMLElement {
       h("label", { text: "Auto-hide" }),
       toggle(settings.autoHide, (v) => { settings.autoHide = v; void save(); }),
       h("span", { class: "hint", text: "the compact island hides after a minute" }),
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Weather city" }),
+      city,
+      h("span", { class: "hint", text: "empty = off · data by Open-Meteo.com" }),
     ),
     h("div", { class: "row" },
       h("label", { text: "Island lives on" }),

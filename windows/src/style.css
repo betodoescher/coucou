@@ -1530,6 +1530,19 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--dim-3);
 }
 
+.int-status > svg {
+  flex: 0 0 auto;
+}
+
+.home-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font: 600 12px var(--font);
+  color: var(--ink);
+}
+
 .int-actions {
   display: flex;
   align-items: center;

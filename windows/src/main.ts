@@ -58,7 +58,12 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    const cityChanged = (s.weatherCity ?? "") !== State.settings.weatherCity;
     State.settings = { ...State.settings, ...s };
+    if (cityChanged) {
+      delete State.integrations.weather;
+      if (State.settings.weatherCity.trim()) void Bridge.refreshIntegration("weather");
+    }
     island.applySettings();
     State.loadIntegrationTasks();
     void refreshConfigured();

@@ -3,10 +3,24 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
+export type AgentSource = "home" | "n8n" | "agent" | "todos";
 
 /** The Tasks pill: shown while there are open to-dos, opens the Tasks tab. */
 export const TODO_PILL_ID = "todos";
+/** The home card: weather, next task, habits, agents. Always first. */
+export const HOME_ID = "home";
+/** Claude Code's session pill; comes and goes with the session, like Cursor's. */
+export const CLAUDE_ID = "integration_claude";
+
+const HOME_TASK: AgentTask = {
+  id: HOME_ID, name: "Today", color: "#FBBF24", state: "idle", stepIndex: 0, steps: [],
+  source: "home", isIntegration: false,
+};
+
+/** Agent session pills: Claude Code and the hook-driven agent_* ones. */
+export function isAgentPill(id: string): boolean {
+  return id === CLAUDE_ID || id.startsWith("agent_");
+}
 export type PillBadge = "approval" | "finished" | "error";
 
 /** The open panel of the Today tab. */
@@ -66,7 +80,6 @@ const task = (
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
 export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
@@ -110,6 +123,8 @@ export interface Settings {
   agentApprovals: boolean;
   /** Where the island was dragged to; null = top centre. Written by Rust only. */
   islandOffset: [number, number] | null;
+  /** City for the home card's weather; empty = no weather. */
+  weatherCity: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -130,6 +145,7 @@ export const DEFAULT_SETTINGS: Settings = {
   kiroModel: "auto",
   agentApprovals: false,
   islandOffset: null,
+  weatherCity: "",
 };
 
 type Listener = () => void;
@@ -224,34 +240,24 @@ class AppState {
     this.notify();
   }
 
-  /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
+  /** loadIntegrationTasks() — the home card always on, integrations opt-in (max 4). */
   loadIntegrationTasks() {
+    if (!this.tasks.some((t) => t.id === HOME_ID)) this.tasks.push({ ...HOME_TASK, steps: [] });
     for (const proto of INTEGRATION_AGENTS) {
-      const shouldLoad =
-        proto.id === "integration_claude" || this.settings.activeIntegrations.includes(proto.id);
+      const shouldLoad = this.settings.activeIntegrations.includes(proto.id);
       const idx = this.tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
     }
-    // Order: integration_claude first, then agent_* pills (visible in slice(0,4)),
-    // then other integrations in declaration order.
+    // Order: home first, then agent pills (visible in slice(0,4)), the Tasks
+    // pill, then integrations in declaration order.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
-    this.tasks.sort((a, b) => {
-      const isAgentA = a.id.startsWith("agent_");
-      const isAgentB = b.id.startsWith("agent_");
-      // integration_claude always first
-      if (a.id === "integration_claude") return -1;
-      if (b.id === "integration_claude") return 1;
-      // agent_* before other integrations; preserve insertion order among themselves
-      if (isAgentA && !isAgentB) return -1;
-      if (isAgentB && !isAgentA) return 1;
-      if (isAgentA && isAgentB) return 0;
-      if (a.id === TODO_PILL_ID) return -1;
-      if (b.id === TODO_PILL_ID) return 1;
-      // both known integrations → declaration order
-      return order.indexOf(a.id) - order.indexOf(b.id);
-    });
-    if (!this.focusId) this.focusId = "integration_claude";
+    const rank = (id: string) =>
+      id === HOME_ID ? 0 : isAgentPill(id) ? 1 : id === TODO_PILL_ID ? 2 : 3;
+    this.tasks.sort((a, b) =>
+      rank(a.id) - rank(b.id) || (rank(a.id) === 3 ? order.indexOf(a.id) - order.indexOf(b.id) : 0),
+    );
+    if (!this.focusId) this.focusId = HOME_ID;
     this.notify();
   }
 
@@ -259,7 +265,7 @@ class AppState {
     const idx = this.tasks.findIndex((t) => t.id === id);
     if (idx < 0) return;
     this.tasks.splice(idx, 1);
-    if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? "integration_claude";
+    if (this.focusId === id) this.focusId = HOME_ID;
     this.notify();
   }
 
@@ -275,9 +281,9 @@ class AppState {
       t.name = name;
       return;
     }
-    // After Claude Code and the agent pills, before the integrations.
-    let at = this.tasks.findIndex((x) => x.id === "integration_claude") + 1;
-    while (at < this.tasks.length && this.tasks[at].id.startsWith("agent_")) at++;
+    // After home and the agent pills, before the integrations.
+    let at = this.tasks.findIndex((x) => x.id === HOME_ID) + 1;
+    while (at < this.tasks.length && isAgentPill(this.tasks[at].id)) at++;
     this.tasks.splice(at, 0, {
       id: TODO_PILL_ID, name, color: "#60A5FA",
       state: "idle", stepIndex: 0, steps: [],
@@ -285,11 +291,11 @@ class AppState {
     });
   }
 
-  /** Creates a dynamic agent_ pill on first event; no-ops if it already exists.
-   *  Inserted right after integration_claude so it appears in the visible slice(0,4). */
+  /** Creates an agent session pill on first event; no-ops if it already exists.
+   *  Inserted right after home so it appears in the visible slice(0,4). */
   upsertExternalAgent(id: string, name: string, color: string) {
     if (this.tasks.some((t) => t.id === id)) return;
-    const at = this.tasks.findIndex((t) => t.id === "integration_claude") + 1;
+    const at = this.tasks.findIndex((t) => t.id === HOME_ID) + 1;
     this.tasks.splice(at, 0, {
       id, name, color,
       state: "idle", stepIndex: 0, steps: [],
@@ -300,11 +306,11 @@ class AppState {
   }
 
   toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
+    if (!TOGGLEABLE_INTEGRATION_IDS.includes(id)) return;
     const active = this.settings.activeIntegrations;
     if (active.includes(id)) {
       this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = "integration_claude";
+      if (this.focusId === id) this.focusId = HOME_ID;
     } else {
       if (active.length >= 4) return;
       this.settings.activeIntegrations = [...active, id];

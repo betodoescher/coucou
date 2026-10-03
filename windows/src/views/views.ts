@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { HOME_ID, State, type AgentTask } from "../core/state";
 import { Bridge, type CursorStatus } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -17,7 +17,7 @@ import {
 } from "../core/todos";
 import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { homeKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -196,14 +196,9 @@ function buildOverview(actions: ViewActions): ViewHost {
         mode = null;
       }
 
-      // VS Code with a live Claude Code session keeps the ticker; every other
+      // Agent sessions (Claude Code, Cursor, Kiro) show the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
-      // Hook-driven agents (Cursor, Kiro) have no integration card: always the ticker.
-      const sessionActive =
-        task?.source === "agent" ||
-        (task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0));
-
-      if (task && sessionActive) {
+      if (task?.source === "agent") {
         if (mode !== "ticker") {
           clear(leftBody);
           leftBody.append(tickerBody);
@@ -214,14 +209,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
-          h("span", {
-            class: "tool",
-            text: task.source === "claudeCode"
-              ? "Claude Code"
-              : task.source === "agent"
-                ? (task.sessionCwd?.split(/[\\/]/).filter(Boolean).pop() ?? "")
-                : "n8n",
-          }),
+          h("span", { class: "tool", text: task.sessionCwd?.split(/[\\/]/).filter(Boolean).pop() ?? "" }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -236,6 +224,7 @@ function buildOverview(actions: ViewActions): ViewHost {
           task.id, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
           JSON.stringify(info?.data ?? {}),
+          task.id === HOME_ID ? homeKey() : "",
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;
@@ -322,13 +311,12 @@ function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewAc
 }
 
 function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
     { class: "pill", onclick: () => actions.setFocus(task.id) },
     canvas,
-    h("span", { class: "lbl", text: label }),
+    h("span", { class: "lbl", text: task.name }),
   );
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {

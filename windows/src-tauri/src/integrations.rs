@@ -70,17 +70,27 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 120, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    spawn(app, WEATHER_ID, 4, 1800, poll_weather);
 }
 
 /// True when the user has this integration switched on in settings.
 fn enabled(app: &AppHandle, id: &str) -> bool {
+    if id == WEATHER_ID {
+        return !weather_city(app).is_empty();
+    }
     app.try_state::<crate::Shared>()
         .map(|shared| {
             let settings = shared.settings.lock().unwrap();
             settings.active_integrations.iter().any(|x| x == id)
         })
         .unwrap_or(false)
+}
+
+fn weather_city(app: &AppHandle) -> String {
+    app.try_state::<crate::Shared>()
+        .map(|shared| shared.settings.lock().unwrap().weather_city.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn spawn<F, Fut>(app: AppHandle, id: &'static str, delay_secs: u64, every_secs: u64, poll: F)
@@ -115,6 +125,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        WEATHER_ID => poll_weather(app).await,
         _ => {}
     }
 }
@@ -747,6 +758,93 @@ async fn poll_calcom(app: AppHandle) {
     });
 }
 
+// ── Weather (Open-Meteo, no key) ──────────────────────────────────────────────
+
+const WEATHER_ID: &str = "weather";
+
+/// The city last geocoded: (what the user typed, display name, lat, lon).
+static GEO: Mutex<Option<(String, String, f64, f64)>> = Mutex::new(None);
+
+async fn poll_weather(app: AppHandle) {
+    let city = weather_city(&app);
+    if city.is_empty() || PAUSED.load(Ordering::Relaxed) {
+        return;
+    }
+    let http = client();
+    let cached = GEO.lock().unwrap().clone().filter(|g| g.0 == city);
+    let (name, lat, lon) = match cached {
+        Some((_, name, lat, lon)) => (name, lat, lon),
+        None => {
+            let found = http
+                .get("https://geocoding-api.open-meteo.com/v1/search")
+                .query(&[("name", city.as_str()), ("count", "1"), ("format", "json")])
+                .send()
+                .await;
+            let Ok(found) = found else { return };
+            let json: Value = found.json().await.unwrap_or(json!({}));
+            let Some((name, lat, lon)) = first_place(&json) else {
+                emit(&app, IntegrationUpdate {
+                    id: WEATHER_ID,
+                    data: json!({}),
+                    error: Some(format!("City not found: {city}")),
+                    event: None,
+                });
+                return;
+            };
+            *GEO.lock().unwrap() = Some((city.clone(), name.clone(), lat, lon));
+            (name, lat, lon)
+        }
+    };
+
+    let response = http
+        .get("https://api.open-meteo.com/v1/forecast")
+        .query(&[
+            ("latitude", lat.to_string()),
+            ("longitude", lon.to_string()),
+            ("current", "temperature_2m,weather_code,is_day".into()),
+            ("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max".into()),
+            ("timezone", "auto".into()),
+            ("forecast_days", "1".into()),
+        ])
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: WEATHER_ID,
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), "Weather unavailable")),
+            event: None,
+        });
+        return;
+    }
+    let json: Value = response.json().await.unwrap_or(json!({}));
+    emit(&app, IntegrationUpdate { id: WEATHER_ID, data: weather_data(&name, &json), error: None, event: None });
+}
+
+fn first_place(json: &Value) -> Option<(String, f64, f64)> {
+    let place = json.get("results")?.as_array()?.first()?;
+    Some((
+        place.get("name")?.as_str()?.to_string(),
+        place.get("latitude")?.as_f64()?,
+        place.get("longitude")?.as_f64()?,
+    ))
+}
+
+fn weather_data(city: &str, json: &Value) -> Value {
+    let current = json.get("current").cloned().unwrap_or(json!({}));
+    let daily = |key: &str| json.get("daily").and_then(|d| d.get(key)).and_then(|v| v.get(0)).cloned();
+    json!({
+        "city": city,
+        "temp": current.get("temperature_2m"),
+        "code": current.get("weather_code"),
+        "isDay": current.get("is_day").and_then(Value::as_i64).map(|d| d == 1),
+        "max": daily("temperature_2m_max"),
+        "min": daily("temperature_2m_min"),
+        "rain": daily("precipitation_probability_max"),
+    })
+}
+
 // ── n8n ───────────────────────────────────────────────────────────────────────
 
 async fn poll_n8n(app: AppHandle) {
@@ -903,5 +1001,31 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weather_reads_open_meteo_shapes() {
+        let geo = json!({ "results": [{ "name": "São Paulo", "latitude": -23.5, "longitude": -46.6 }] });
+        assert_eq!(first_place(&geo), Some(("São Paulo".into(), -23.5, -46.6)));
+        assert_eq!(first_place(&json!({})), None);
+
+        let forecast = json!({
+            "current": { "temperature_2m": 24.3, "weather_code": 2, "is_day": 1 },
+            "daily": {
+                "temperature_2m_max": [28.1], "temperature_2m_min": [18.0],
+                "precipitation_probability_max": [30]
+            }
+        });
+        let data = weather_data("São Paulo", &forecast);
+        assert_eq!(data["temp"], json!(24.3));
+        assert_eq!(data["code"], json!(2));
+        assert_eq!(data["isDay"], json!(true));
+        assert_eq!(data["max"], json!(28.1));
+        assert_eq!(data["rain"], json!(30));
     }
 }
