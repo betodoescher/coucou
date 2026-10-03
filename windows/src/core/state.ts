@@ -10,7 +10,7 @@ export const TODO_PILL_ID = "todos";
 export type PillBadge = "approval" | "finished" | "error";
 
 /** The open panel of the Today tab. */
-export type TodayTab = "tasks" | "notes";
+export type TodayTab = "tasks" | "habits" | "notes";
 
 export interface AgentTask {
   id: string;
