@@ -10,7 +10,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State, TODO_PILL_ID } from "../core/state";
+import { HOME_ID, State, TODO_PILL_ID } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -137,9 +137,11 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.id === "integration_claude" || task.source === "agent") {
-          void Bridge.openInVSCode(task.sessionCwd ?? null);
+        if (task.id === HOME_ID) {
+          State.todayTab = "tasks";
+          this.setView("todos");
         }
+        else if (task.source === "agent") void Bridge.openInVSCode(task.sessionCwd ?? null);
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },

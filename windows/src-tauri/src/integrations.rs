@@ -70,17 +70,27 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 120, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app, "integration_notion", 9, 300, poll_notion);
+    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
+    spawn(app, WEATHER_ID, 4, 1800, poll_weather);
 }
 
 /// True when the user has this integration switched on in settings.
 fn enabled(app: &AppHandle, id: &str) -> bool {
+    if id == WEATHER_ID {
+        return !weather_city(app).is_empty();
+    }
     app.try_state::<crate::Shared>()
         .map(|shared| {
             let settings = shared.settings.lock().unwrap();
             settings.active_integrations.iter().any(|x| x == id)
         })
         .unwrap_or(false)
+}
+
+fn weather_city(app: &AppHandle) -> String {
+    app.try_state::<crate::Shared>()
+        .map(|shared| shared.settings.lock().unwrap().weather_city.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn spawn<F, Fut>(app: AppHandle, id: &'static str, delay_secs: u64, every_secs: u64, poll: F)
@@ -115,6 +125,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
+        WEATHER_ID => poll_weather(app).await,
         _ => {}
     }
 }
@@ -747,6 +758,123 @@ async fn poll_calcom(app: AppHandle) {
     });
 }
 
+// ── Weather (Open-Meteo, no key) ──────────────────────────────────────────────
+
+const WEATHER_ID: &str = "weather";
+
+/// The city last geocoded: (what the user typed, display name, lat, lon).
+static GEO: Mutex<Option<(String, String, f64, f64)>> = Mutex::new(None);
+
+async fn poll_weather(app: AppHandle) {
+    let city = weather_city(&app);
+    if city.is_empty() || PAUSED.load(Ordering::Relaxed) {
+        return;
+    }
+    let http = client();
+    let cached = GEO.lock().unwrap().clone().filter(|g| g.0 == city);
+    let (name, lat, lon) = match cached {
+        Some((_, name, lat, lon)) => (name, lat, lon),
+        None => {
+            let mut place = None;
+            for (query, qualifier) in geo_queries(&city) {
+                let found = http
+                    .get("https://geocoding-api.open-meteo.com/v1/search")
+                    .query(&[("name", query.as_str()), ("count", "10"), ("format", "json")])
+                    .send()
+                    .await;
+                let Ok(found) = found else { return };
+                let json: Value = found.json().await.unwrap_or(json!({}));
+                place = pick_place(&json, qualifier.as_deref());
+                if place.is_some() {
+                    break;
+                }
+            }
+            let Some((name, lat, lon)) = place else {
+                emit(&app, IntegrationUpdate {
+                    id: WEATHER_ID,
+                    data: json!({}),
+                    error: Some(format!("City not found: {city}")),
+                    event: None,
+                });
+                return;
+            };
+            *GEO.lock().unwrap() = Some((city.clone(), name.clone(), lat, lon));
+            (name, lat, lon)
+        }
+    };
+
+    let response = http
+        .get("https://api.open-meteo.com/v1/forecast")
+        .query(&[
+            ("latitude", lat.to_string()),
+            ("longitude", lon.to_string()),
+            ("current", "temperature_2m,weather_code,is_day".into()),
+            ("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max".into()),
+            ("timezone", "auto".into()),
+            ("forecast_days", "1".into()),
+        ])
+        .send()
+        .await;
+    let Ok(response) = response else { return };
+    if !response.status().is_success() {
+        emit(&app, IntegrationUpdate {
+            id: WEATHER_ID,
+            data: json!({}),
+            error: Some(status_error(response.status().as_u16(), "Weather unavailable")),
+            event: None,
+        });
+        return;
+    }
+    let json: Value = response.json().await.unwrap_or(json!({}));
+    emit(&app, IntegrationUpdate { id: WEATHER_ID, data: weather_data(&name, &json), error: None, event: None });
+}
+
+/// Open-Meteo only matches English country names, and a state only after a
+/// comma: "São Paulo, Brasil" and "Florianópolis SC" find nothing. So: the text
+/// as typed, then the city alone with the rest kept to pick among the results.
+fn geo_queries(city: &str) -> Vec<(String, Option<String>)> {
+    let mut out = vec![(city.to_string(), None)];
+    if let Some((name, rest)) = city.split_once(',') {
+        out.push((name.trim().to_string(), Some(rest.trim().to_string())));
+    } else if let Some((name, last)) = city.rsplit_once(' ') {
+        out.push((name.trim().to_string(), Some(last.trim().to_string())));
+    }
+    out
+}
+
+/// The first result, or the first whose state or country matches `qualifier`
+/// ("SC" = Santa Catarina by initials, "Brasil", "BR", "Santa Catarina").
+fn pick_place(json: &Value, qualifier: Option<&str>) -> Option<(String, f64, f64)> {
+    let results = json.get("results")?.as_array()?;
+    let matches = |place: &Value| {
+        let Some(q) = qualifier.map(str::to_lowercase).filter(|q| !q.is_empty()) else { return false };
+        let field = |k: &str| place.get(k).and_then(Value::as_str).unwrap_or("").to_lowercase();
+        let admin1 = field("admin1");
+        let initials: String = admin1.split_whitespace().filter_map(|w| w.chars().next()).collect();
+        [admin1.clone(), initials, field("country"), field("country_code")].contains(&q)
+    };
+    let place = results.iter().find(|p| matches(p)).or_else(|| results.first())?;
+    Some((
+        place.get("name")?.as_str()?.to_string(),
+        place.get("latitude")?.as_f64()?,
+        place.get("longitude")?.as_f64()?,
+    ))
+}
+
+fn weather_data(city: &str, json: &Value) -> Value {
+    let current = json.get("current").cloned().unwrap_or(json!({}));
+    let daily = |key: &str| json.get("daily").and_then(|d| d.get(key)).and_then(|v| v.get(0)).cloned();
+    json!({
+        "city": city,
+        "temp": current.get("temperature_2m"),
+        "code": current.get("weather_code"),
+        "isDay": current.get("is_day").and_then(Value::as_i64).map(|d| d == 1),
+        "max": daily("temperature_2m_max"),
+        "min": daily("temperature_2m_min"),
+        "rain": daily("precipitation_probability_max"),
+    })
+}
+
 // ── n8n ───────────────────────────────────────────────────────────────────────
 
 async fn poll_n8n(app: AppHandle) {
@@ -903,5 +1031,41 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weather_reads_open_meteo_shapes() {
+        let geo = json!({ "results": [
+            { "name": "Florianópolis", "admin1": "Acre", "country_code": "BR", "latitude": -9.0, "longitude": -70.0 },
+            { "name": "Florianópolis", "admin1": "Santa Catarina", "country_code": "BR", "latitude": -27.6, "longitude": -48.5 },
+        ] });
+        assert_eq!(pick_place(&geo, Some("SC")).unwrap().1, -27.6);
+        assert_eq!(pick_place(&geo, Some("santa catarina")).unwrap().1, -27.6);
+        assert_eq!(pick_place(&geo, None).unwrap().1, -9.0);
+        assert_eq!(pick_place(&geo, Some("Brasil")).unwrap().1, -9.0);
+        assert_eq!(pick_place(&json!({}), None), None);
+
+        assert_eq!(geo_queries("Florianópolis SC")[1], ("Florianópolis".into(), Some("SC".into())));
+        assert_eq!(geo_queries("São Paulo, Brasil")[1], ("São Paulo".into(), Some("Brasil".into())));
+        assert_eq!(geo_queries("Lisboa").len(), 1);
+
+        let forecast = json!({
+            "current": { "temperature_2m": 24.3, "weather_code": 2, "is_day": 1 },
+            "daily": {
+                "temperature_2m_max": [28.1], "temperature_2m_min": [18.0],
+                "precipitation_probability_max": [30]
+            }
+        });
+        let data = weather_data("São Paulo", &forecast);
+        assert_eq!(data["temp"], json!(24.3));
+        assert_eq!(data["code"], json!(2));
+        assert_eq!(data["isDay"], json!(true));
+        assert_eq!(data["max"], json!(28.1));
+        assert_eq!(data["rain"], json!(30));
     }
 }

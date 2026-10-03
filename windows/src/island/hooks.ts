@@ -5,10 +5,8 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { CLAUDE_ID, State } from "../core/state";
 import type { Island } from "./island";
-
-const CLAUDE_ID = "integration_claude";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -34,6 +32,7 @@ interface HookPayload {
 
 /** Agents Coucou installs hooks for: their pill name and colour. */
 const KNOWN_AGENTS: Record<string, [string, string]> = {
+  claude: ["Claude Code", "#F5F6F8"],
   cursor: ["Cursor", "#C0C4CC"],
   kiro: ["Kiro", "#9046FF"],
 };
@@ -53,16 +52,6 @@ function agentColor(name: string): string {
     h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
   }
   return FALLBACK_COLORS[Math.abs(h) % FALLBACK_COLORS.length];
-}
-
-const PROJECT_ALIASES: Record<string, string> = {
-  "notch-buddy": "Notch Buddy",
-  notchbuddy: "Notch Buddy",
-  notch_buddy: "Notch Buddy",
-};
-
-function aliasProjectName(name: string): string {
-  return PROJECT_ALIASES[name.toLowerCase()] ?? name;
 }
 
 function lastPathComponent(p: string): string {
@@ -137,23 +126,7 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
-  if (!t) return;
-  t.name = projectName;
-  if (cwd) t.sessionCwd = cwd;
-}
-
-function clearSession() {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
-  if (!t) return;
-  t.steps = [];
-  t.stepIndex = 0;
-  t.name = "VS Code";
-  t.pillBadge = null;
-}
-
-/** Cursor/Kiro pills that already announced the end of this turn. */
+/** Agent pills that already announced the end of this turn. */
 const stopped = new Set<string>();
 /** Pills waiting to go once their session ended and the island closed. */
 const removals = new Map<string, number>();
@@ -173,16 +146,13 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
-  const raw = lastPathComponent(cwd);
-  const projectName = aliasProjectName(raw || "Session");
 
   // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
-  // "claude" is reserved; absent or invalid → Claude Code pill unchanged.
+  // "claude" is reserved; absent or invalid → the Claude Code pill.
   const validAgent = validateAgent(payload.coucou_agent);
   const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
+  /** Cursor/Kiro: their shell commands only wait on the island when approvals are on. */
   const isExternalAgent = validAgent !== null;
-
-  const focused = State.focusId === agentId;
 
   /** Alerts force the island open; work events only reveal the compact island. */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
@@ -195,24 +165,20 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
-  /** Ensure the agent pill exists (no-op for Claude Code). */
   const ensurePill = () => {
-    if (isExternalAgent) {
-      const pending = removals.get(agentId);
-      if (pending != null) {
-        window.clearTimeout(pending);
-        removals.delete(agentId);
-      }
-      const [label, color] = KNOWN_AGENTS[validAgent!] ?? [validAgent!, agentColor(validAgent!)];
-      State.upsertExternalAgent(agentId, label, color);
-      const t = State.tasks.find((x) => x.id === agentId);
-      if (t && cwd) t.sessionCwd = cwd;
-    } else {
-      upsert(projectName, cwd);
+    const pending = removals.get(agentId);
+    if (pending != null) {
+      window.clearTimeout(pending);
+      removals.delete(agentId);
     }
+    const key = validAgent ?? "claude";
+    const [label, color] = KNOWN_AGENTS[key] ?? [key, agentColor(key)];
+    State.upsertExternalAgent(agentId, label, color);
+    const t = State.tasks.find((x) => x.id === agentId);
+    if (t && cwd) t.sessionCwd = cwd;
   };
 
-  /** Cursor/Kiro: open the island on this agent, whatever had the focus. */
+  /** Open the island on this agent, whatever had the focus. */
   const announce = (kind: "finished" | "error") => {
     ensurePill();
     State.focusId = agentId;
@@ -275,58 +241,36 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "Stop": {
       const said = payload.message ?? payload.assistant_response;
-      if (isExternalAgent) {
-        if (said) State.appendStep(agentId, said.slice(0, 60));
-        stopped.add(agentId);
-        announce("finished");
-        break;
-      }
-      State.updateTask(agentId, "finished");
       if (said) State.appendStep(agentId, said.slice(0, 60));
-      Sound.play("finish");
-      if (focused) surface("finished", true);
-      else State.setPillBadge(agentId, "finished");
-      window.setTimeout(() => {
-        if (isExternalAgent) {
-          State.removeTask(agentId);
-        } else {
-          State.updateTask(agentId, "idle");
-          State.setPillBadge(agentId, null);
-        }
-      }, 5200);
+      stopped.add(agentId);
+      announce("finished");
       break;
     }
 
     case "StopFailure":
-      State.updateTask(agentId, "error");
-      Sound.play("error");
-      if (focused) surface("error", true);
-      else State.setPillBadge(agentId, "error");
+      stopped.add(agentId);
+      announce("error");
       break;
 
-    case "SessionEnd":
-      if (isExternalAgent) {
-        // `agent -p` sends no Stop: the session's end is the turn's end. A
-        // session that did nothing (a composer opened and closed) stays quiet.
-        const worked = (State.tasks.find((t) => t.id === agentId)?.steps.length ?? 0) > 0;
-        if (!stopped.has(agentId) && worked) {
-          const status = `${payload.final_status ?? ""} ${payload.reason ?? ""}`;
-          announce(/error|fail/i.test(status) ? "error" : "finished");
-        }
-        stopped.delete(agentId);
-        // The pill goes once the island had time to show how it ended.
-        const prev = removals.get(agentId);
-        if (prev != null) window.clearTimeout(prev);
-        removals.set(agentId, window.setTimeout(() => {
-          removals.delete(agentId);
-          State.removeTask(agentId);
-          State.notify();
-        }, (State.settings.autoCloseInterval + 1) * 1000));
-      } else {
-        State.updateTask(agentId, "idle");
-        clearSession();
+    case "SessionEnd": {
+      // `agent -p` sends no Stop: the session's end is the turn's end. A
+      // session that did nothing (a composer opened and closed) stays quiet.
+      const worked = (State.tasks.find((t) => t.id === agentId)?.steps.length ?? 0) > 0;
+      if (!stopped.has(agentId) && worked) {
+        const status = `${payload.final_status ?? ""} ${payload.reason ?? ""}`;
+        announce(/error|fail/i.test(status) ? "error" : "finished");
       }
+      stopped.delete(agentId);
+      // The pill goes once the island had time to show how it ended.
+      const prev = removals.get(agentId);
+      if (prev != null) window.clearTimeout(prev);
+      removals.set(agentId, window.setTimeout(() => {
+        removals.delete(agentId);
+        State.removeTask(agentId);
+        State.notify();
+      }, (State.settings.autoCloseInterval + 1) * 1000));
       break;
+    }
 
     case "SubagentStart":
       State.appendStep(agentId, "+ subagent");
@@ -363,7 +307,7 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      if (!isExternalAgent) upsert(projectName, cwd);
+      ensurePill();
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       State.pendingApproval = {
         taskId: agentId,
@@ -378,17 +322,9 @@ function handleHook(island: Island, payload: HookPayload) {
       State.updateTask(agentId, "approval");
       State.isPinned = true;
       Sound.play("approval");
-      // Cursor/Kiro always open on their own card, whatever had the focus.
-      if (isExternalAgent) State.focusId = agentId;
-      if (focused || isExternalAgent) {
-        island.alert("approval");
-      } else {
-        // Another agent holds the view, so the card would yank it away. The badge
-        // is the signal instead — but it has to be on screen for that to mean
-        // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(agentId, "approval");
-        island.reveal();
-      }
+      // Agents always open on their own card, whatever had the focus.
+      State.focusId = agentId;
+      island.alert("approval");
       // Coucou answers within 108 s or not at all; after that the terminal has
       // taken over and the card would be lying.
       pendingTimeout = window.setTimeout(() => {
