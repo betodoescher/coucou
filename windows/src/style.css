@@ -1062,6 +1062,11 @@ input[type="range"]::-webkit-slider-thumb {
   color-scheme: dark;
 }
 
+.todo-time {
+  max-width: 76px;
+  color-scheme: dark;
+}
+
 .todo-add {
   width: 24px;
   height: 24px;

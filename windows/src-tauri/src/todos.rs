@@ -31,6 +31,9 @@ pub struct TodoItem {
     pub done_at: Option<f64>,
     /// "YYYY-MM-DD", a local day.
     pub due: Option<String>,
+    /// "HH:MM" on the due day: Mochi opens the island then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<String>,
     /// 0 none … 3 high.
     pub priority: u8,
     pub list_id: Option<String>,
@@ -122,6 +125,11 @@ fn validate(doc: &TodoDoc) -> Result<(), String> {
         if item.due.as_deref().is_some_and(|d| !is_day(d)) {
             return Err("A due date must look like 2026-10-05.".into());
         }
+        if let Some(t) = item.time.as_deref() {
+            if item.due.is_none() || !is_time(t) {
+                return Err("A reminder time must look like 15:30, on a task with a day.".into());
+            }
+        }
     }
     Ok(())
 }
@@ -132,6 +140,15 @@ fn is_day(s: &str) -> bool {
         && b[4] == b'-'
         && b[7] == b'-'
         && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+fn is_time(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 5
+        && b[2] == b':'
+        && b.iter().enumerate().all(|(i, c)| i == 2 || c.is_ascii_digit())
+        && s[..2].parse::<u8>().is_ok_and(|h| h < 24)
+        && s[3..].parse::<u8>().is_ok_and(|m| m < 60)
 }
 
 #[cfg(test)]
@@ -145,6 +162,7 @@ mod tests {
             done: false,
             done_at: None,
             due: Some("2026-10-05".into()),
+            time: None,
             priority: 2,
             list_id: None,
             created_at: 1.0,
@@ -199,6 +217,17 @@ mod tests {
         let mut bad_day = item("x");
         bad_day.due = Some("05/10/2026".into());
         assert!(validate(&TodoDoc { items: vec![bad_day], ..TodoDoc::default() }).is_err());
+
+        let mut timed = item("x");
+        timed.time = Some("15:30".into());
+        assert!(validate(&TodoDoc { items: vec![timed.clone()], ..TodoDoc::default() }).is_ok());
+        for bad in ["25:00", "9:30", "15h30"] {
+            timed.time = Some(bad.into());
+            assert!(validate(&TodoDoc { items: vec![timed.clone()], ..TodoDoc::default() }).is_err(), "{bad}");
+        }
+        timed.time = Some("15:30".into());
+        timed.due = None;
+        assert!(validate(&TodoDoc { items: vec![timed], ..TodoDoc::default() }).is_err(), "a time needs a day");
 
         let mut bad_priority = item("x");
         bad_priority.priority = 4;

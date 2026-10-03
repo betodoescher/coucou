@@ -13,7 +13,7 @@ import { buildPrompt } from "./chat";
 import { buildTodos } from "./todos";
 import { Todos } from "../core/todoStore";
 import {
-  PRIORITY_COLORS, dayOf, dueCount, dueLabel, isOverdue, toggleTodo, upNext, type TodoItem,
+  PRIORITY_COLORS, dayOf, dueCount, isOverdue, toggleTodo, upNext, whenLabel, type TodoItem,
 } from "../core/todos";
 import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -98,6 +98,11 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const collapseBtn = h(
+    "button",
+    { title: "Make smaller", onclick: () => actions.collapse() },
+    svg(ICONS.chevronUp, 12, { stroke: 2.4 }),
+  );
 
   function go(v: IslandViewName) {
     actions.blip();
@@ -108,7 +113,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabTodos, tabDrop),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn),
+    h("div", { class: "header-actions" }, gearBtn, soundBtn, collapseBtn),
   );
 
   return {
@@ -307,7 +312,7 @@ function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewAc
         }),
         h("button", { class: "todo-title", text: item.title, title: "Open tasks", onclick: open }),
         item.due
-          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: dueLabel(item.due, now) })
+          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: whenLabel(item, now) })
           : null,
       ),
     );
