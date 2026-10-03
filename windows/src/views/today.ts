@@ -1,10 +1,11 @@
-// The Today tab: tasks and notes behind one segmented switch, in the same card.
+// The Today tab: tasks, habits and notes behind one segmented switch, in the same card.
 
 import { h } from "./dom";
 import { Sound } from "../core/sound";
 import { State, type TodayTab } from "../core/state";
 import { buildTodos } from "./todos";
 import { buildNotes } from "./notes";
+import { buildHabits } from "./habits";
 import type { ViewHost } from "./views";
 
 /** A panel of the Today card; the switch is placed in its `segSlot` while it is shown. */
@@ -17,7 +18,7 @@ export interface TodayPanel {
   focus(): void;
 }
 
-const TABS: [TodayTab, string][] = [["tasks", "Tasks"], ["notes", "Notes"]];
+const TABS: [TodayTab, string][] = [["tasks", "Tasks"], ["habits", "Habits"], ["notes", "Notes"]];
 
 let rowsOf = () => 0;
 
@@ -29,6 +30,7 @@ export function todayRowCount(): number {
 export function buildToday(onHeightChange: () => void): ViewHost {
   const panels: Record<TodayTab, TodayPanel> = {
     tasks: buildTodos(onHeightChange),
+    habits: buildHabits(onHeightChange),
     notes: buildNotes(onHeightChange),
   };
   rowsOf = () => panels[State.todayTab].rows();
@@ -65,7 +67,7 @@ export function buildToday(onHeightChange: () => void): ViewHost {
   }
 
   return {
-    el: h("div", { class: "view" }, h("div", { class: "card todo-card" }, panels.tasks.el, panels.notes.el)),
+    el: h("div", { class: "view" }, h("div", { class: "card todo-card" }, ...Object.values(panels).map((p) => p.el))),
     sync,
     focus() {
       panels[State.todayTab].focus();

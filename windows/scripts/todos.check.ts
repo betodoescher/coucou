@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   addTodo, compareTodos, dayChoices, dueCount, editTodo, upNext, dueLabel, parseQuickAdd, removeList, toggleTodo, visibleTodos,
   nextReminder, nextWake, reminderDue, ringsAt, addNote, editNote, sortedNotes, agoLabel,
+  addHabit, toggleHabit, removeHabit, streak, lastDays,
   EMPTY_DOC, type TodoItem,
 } from "../src/core/todos.ts";
 
@@ -132,6 +133,23 @@ assert.equal(agoLabel(now.getTime() - 30_000, now), "now");
 assert.equal(agoLabel(now.getTime() - 5 * 60_000, now), "5m");
 assert.equal(agoLabel(now.getTime() - 3 * 3_600_000, now), "3h");
 assert.equal(agoLabel(now.getTime() - 2 * 86_400_000, now), "2d");
+
+let habits = addHabit(EMPTY_DOC, " Read ", now)!;
+assert.equal(addHabit(habits, "  ", now), null);
+const read = habits.habits![0];
+assert.equal(read.name, "Read");
+habits = toggleHabit(habits, read.id, "2026-10-01");
+habits = toggleHabit(habits, read.id, "2026-09-30");
+assert.deepEqual(habits.habits![0].days, ["2026-09-30", "2026-10-01"], "kept sorted");
+assert.equal(streak(habits.habits![0], now), 2, "today not ticked yet: the run from yesterday still counts");
+habits = toggleHabit(habits, read.id, "2026-10-02");
+assert.equal(streak(habits.habits![0], now), 3);
+assert.equal(streak(habits.habits![0], new Date(2026, 9, 4, 9)), 0, "a missed day breaks it");
+habits = toggleHabit(habits, read.id, "2026-10-02");
+assert.deepEqual(habits.habits![0].days, ["2026-09-30", "2026-10-01"], "untick");
+assert.equal(streak({ ...read, days: ["2026-02-28", "2026-03-01"] }, new Date(2026, 2, 1, 12)), 2, "across a month end");
+assert.deepEqual(lastDays(now, 3), ["2026-09-30", "2026-10-01", "2026-10-02"]);
+assert.equal(removeHabit(habits, read.id).habits!.length, 0);
 
 doc = removeList(doc, doc.lists[0].id);
 assert.equal(doc.lists.length, 0);

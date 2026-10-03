@@ -37,9 +37,18 @@ export interface TodoDoc {
   items: TodoItem[];
   /** Quick notes of the Today tab; absent in lists saved before them. */
   notes?: Note[];
+  habits?: Habit[];
 }
 
-export const EMPTY_DOC: TodoDoc = { version: 1, lists: [], items: [], notes: [] };
+export interface Habit {
+  id: string;
+  name: string;
+  createdAt: number;
+  /** The local days it was done, "YYYY-MM-DD". */
+  days: string[];
+}
+
+export const EMPTY_DOC: TodoDoc = { version: 1, lists: [], items: [], notes: [], habits: [] };
 
 export const LIST_COLORS = ["#3B82F6", "#22C55E", "#F59E0B", "#EF4444", "#A855F7", "#EC4899", "#14B8A6"];
 
@@ -379,6 +388,50 @@ export function editNote(doc: TodoDoc, id: string, text: string, now: Date): Tod
 
 export function removeNote(doc: TodoDoc, id: string): TodoDoc {
   return { ...doc, notes: (doc.notes ?? []).filter((n) => n.id !== id) };
+}
+
+// ── Habits ────────────────────────────────────────────────────────────────────
+
+/** Null when the name is blank. */
+export function addHabit(doc: TodoDoc, name: string, now: Date): TodoDoc | null {
+  const n = name.trim();
+  if (!n) return null;
+  return { ...doc, habits: [...(doc.habits ?? []), { id: newId(), name: n, createdAt: now.getTime(), days: [] }] };
+}
+
+/** Ticks or unticks `day`. */
+export function toggleHabit(doc: TodoDoc, id: string, day: string): TodoDoc {
+  return {
+    ...doc,
+    habits: (doc.habits ?? []).map((h) =>
+      h.id !== id ? h
+      : h.days.includes(day) ? { ...h, days: h.days.filter((d) => d !== day) }
+      : { ...h, days: [...h.days, day].sort() }),
+  };
+}
+
+export function removeHabit(doc: TodoDoc, id: string): TodoDoc {
+  return { ...doc, habits: (doc.habits ?? []).filter((h) => h.id !== id) };
+}
+
+/**
+ * Days in a row up to today. Today not ticked yet does not break it: the
+ * run still counts from yesterday until the day is over.
+ */
+export function streak(habit: Habit, now: Date): number {
+  const done = new Set(habit.days);
+  let n = 0;
+  let day = done.has(dayOf(now)) ? now : addDays(now, -1);
+  while (done.has(dayOf(day))) {
+    n++;
+    day = addDays(day, -1);
+  }
+  return n;
+}
+
+/** The last `n` days, oldest first, today last. */
+export function lastDays(now: Date, n: number): string[] {
+  return Array.from({ length: n }, (_, i) => dayOf(addDays(now, i - n + 1)));
 }
 
 /** "now", "5m", "3h", "2d", then "Oct 5". */

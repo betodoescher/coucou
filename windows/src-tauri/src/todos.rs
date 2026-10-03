@@ -15,6 +15,8 @@ const MAX_TITLE: usize = 500;
 const MAX_NAME: usize = 60;
 const MAX_NOTES: usize = 1000;
 const MAX_NOTE: usize = 5000;
+const MAX_HABITS: usize = 50;
+const MAX_HABIT_DAYS: usize = 4000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,11 +62,23 @@ pub struct TodoDoc {
     /// Quick notes of the Today tab; absent in files saved before them.
     #[serde(default)]
     pub notes: Vec<Note>,
+    #[serde(default)]
+    pub habits: Vec<Habit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Habit {
+    pub id: String,
+    pub name: String,
+    pub created_at: f64,
+    /// The local days it was done, "YYYY-MM-DD".
+    pub days: Vec<String>,
 }
 
 impl Default for TodoDoc {
     fn default() -> Self {
-        Self { version: 1, lists: Vec::new(), items: Vec::new(), notes: Vec::new() }
+        Self { version: 1, lists: Vec::new(), items: Vec::new(), notes: Vec::new(), habits: Vec::new() }
     }
 }
 
@@ -151,6 +165,17 @@ fn validate(doc: &TodoDoc) -> Result<(), String> {
     if doc.notes.iter().any(|n| n.text.trim().is_empty() || n.text.chars().count() > MAX_NOTE) {
         return Err(format!("A note must be 1 to {MAX_NOTE} characters."));
     }
+    if doc.habits.len() > MAX_HABITS {
+        return Err(format!("Too many habits (max {MAX_HABITS})."));
+    }
+    for habit in &doc.habits {
+        if habit.name.trim().is_empty() || habit.name.chars().count() > MAX_NAME {
+            return Err(format!("A habit name must be 1 to {MAX_NAME} characters."));
+        }
+        if habit.days.len() > MAX_HABIT_DAYS || habit.days.iter().any(|d| !is_day(d)) {
+            return Err("A habit's days must look like 2026-10-05.".into());
+        }
+    }
     Ok(())
 }
 
@@ -205,6 +230,7 @@ mod tests {
             lists: vec![TodoList { id: "w".into(), name: "Work".into(), color: "#3b82f6".into() }],
             items: vec![item("Send the report")],
             notes: vec![Note { id: "n".into(), text: "Gate code 4512".into(), created_at: 1.0, updated_at: 2.0 }],
+            habits: vec![Habit { id: "h".into(), name: "Read".into(), created_at: 1.0, days: vec!["2026-10-02".into()] }],
         };
         save_to(&file, &doc).unwrap();
         assert_eq!(load_from(&file), doc);
@@ -261,6 +287,11 @@ mod tests {
         let note = |text: &str| Note { id: "n".into(), text: text.into(), created_at: 1.0, updated_at: 1.0 };
         assert!(validate(&TodoDoc { notes: vec![note("  ")], ..TodoDoc::default() }).is_err());
         assert!(validate(&TodoDoc { notes: vec![note(&"x".repeat(MAX_NOTE + 1))], ..TodoDoc::default() }).is_err());
+
+        let habit = |name: &str, day: &str| Habit { id: "h".into(), name: name.into(), created_at: 1.0, days: vec![day.into()] };
+        assert!(validate(&TodoDoc { habits: vec![habit("Read", "2026-10-02")], ..TodoDoc::default() }).is_ok());
+        assert!(validate(&TodoDoc { habits: vec![habit(" ", "2026-10-02")], ..TodoDoc::default() }).is_err());
+        assert!(validate(&TodoDoc { habits: vec![habit("Read", "today")], ..TodoDoc::default() }).is_err());
 
         let mut bad_priority = item("x");
         bad_priority.priority = 4;

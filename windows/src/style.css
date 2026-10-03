@@ -977,6 +977,50 @@ input[type="range"]::-webkit-slider-thumb {
   scrollbar-width: none;
 }
 
+.habit-check.done {
+  background: #22c55e;
+  border-color: #22c55e !important;
+}
+
+.habit-name {
+  font: 400 12.5px var(--font);
+  color: var(--ink);
+}
+
+.habit-week {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.habit-day {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: default;
+}
+
+.habit-day:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.habit-day.on {
+  background: #22c55e;
+}
+
+.habit-streak {
+  min-width: 22px;
+  text-align: right;
+  color: var(--dim-3);
+}
+
+.habit-streak.on {
+  color: #22c55e;
+}
+
 .note-edit {
   resize: none;
   font: 400 12.5px/1.4 var(--font);
