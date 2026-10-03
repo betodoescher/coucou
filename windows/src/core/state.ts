@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { FocusRun } from "./focus";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
 
@@ -10,7 +11,7 @@ export const TODO_PILL_ID = "todos";
 export type PillBadge = "approval" | "finished" | "error";
 
 /** The open panel of the Today tab. */
-export type TodayTab = "tasks" | "habits" | "notes";
+export type TodayTab = "tasks" | "habits" | "notes" | "focus";
 
 export interface AgentTask {
   id: string;
@@ -135,6 +136,8 @@ class AppState {
   mode: IslandMode = "hidden";
   view: IslandViewName = "overview";
   todayTab: TodayTab = "tasks";
+  /** The running focus timer; kept in memory only, a restart ends it. */
+  focusRun: FocusRun | null = null;
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;

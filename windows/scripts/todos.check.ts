@@ -6,6 +6,7 @@ import {
   addHabit, toggleHabit, removeHabit, streak, lastDays,
   EMPTY_DOC, type TodoItem,
 } from "../src/core/todos.ts";
+import { breakFor, clockLabel, pauseRun, remaining, resumeRun, startRun } from "../src/core/focus.ts";
 
 // Friday 2 October 2026, 15:00 local.
 const now = new Date(2026, 9, 2, 15, 0);
@@ -150,6 +151,19 @@ assert.deepEqual(habits.habits![0].days, ["2026-09-30", "2026-10-01"], "untick")
 assert.equal(streak({ ...read, days: ["2026-02-28", "2026-03-01"] }, new Date(2026, 2, 1, 12)), 2, "across a month end");
 assert.deepEqual(lastDays(now, 3), ["2026-09-30", "2026-10-01", "2026-10-02"]);
 assert.equal(removeHabit(habits, read.id).habits!.length, 0);
+
+const t0 = now.getTime();
+let run = startRun("focus", 25, t0);
+assert.equal(clockLabel(remaining(run, t0)), "25:00");
+assert.equal(clockLabel(remaining(run, t0 + 1)), "25:00", "rounds up");
+assert.equal(clockLabel(remaining(run, t0 + 25 * 60_000 - 1000)), "0:01");
+assert.equal(remaining(run, t0 + 30 * 60_000), 0, "never negative");
+run = pauseRun(run, t0 + 60_000);
+assert.equal(remaining(run, t0 + 10 * 60_000), 24 * 60_000, "paused: the clock stands still");
+assert.equal(pauseRun(run, t0 + 5 * 60_000), run, "pausing twice changes nothing");
+run = resumeRun(run, t0 + 10 * 60_000);
+assert.equal(run.endsAt, t0 + 34 * 60_000);
+assert.deepEqual([breakFor(15), breakFor(25), breakFor(50)], [5, 5, 10]);
 
 doc = removeList(doc, doc.lists[0].id);
 assert.equal(doc.lists.length, 0);

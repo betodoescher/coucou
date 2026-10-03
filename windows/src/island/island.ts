@@ -18,6 +18,7 @@ import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { todayRowCount } from "../views/today";
+import { clockLabel, remaining } from "../core/focus";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 
@@ -45,6 +46,8 @@ export class Island {
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
+  /** The focus timer, in the mini grid's place on the compact island. */
+  private focusClock!: HTMLElement;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
 
@@ -186,6 +189,7 @@ export class Island {
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
+    this.focusClock = h("div", { id: "focus-clock" });
     this.countdown = h("div", { id: "countdown" });
 
     this.header = buildHeader(actions);
@@ -220,6 +224,7 @@ export class Island {
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
+      this.focusClock,
       this.countdown,
     );
 
@@ -494,6 +499,8 @@ export class Island {
     // the state-driven DOM sync.
     this.miniGrid.style.left = `${w - 40 - 14.5}px`;
     this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
+    this.focusClock.style.right = "14px";
+    this.focusClock.style.top = `${hh / 2 - 8}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
@@ -902,8 +909,16 @@ export class Island {
     }
 
     // Compact mini grid
-    const showGrid = State.mode === "compact";
+    const run = State.focusRun;
+    const showClock = State.mode === "compact" && run !== null;
+    const showGrid = State.mode === "compact" && !showClock;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
+    this.focusClock.style.opacity = showClock ? "1" : "0";
+    if (run) {
+      this.focusClock.textContent = clockLabel(remaining(run, Date.now()));
+      this.focusClock.classList.toggle("break", run.phase === "break");
+      this.focusClock.classList.toggle("paused", run.pausedLeft !== null);
+    }
     if (showGrid) {
       const others = State.otherTasks.slice(0, 4);
       const key = others.map((t) => t.id).join("|");

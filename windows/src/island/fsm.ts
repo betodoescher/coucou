@@ -12,6 +12,8 @@ export class IslandStateMachine {
   homeToPetitDelay = 15;
   /** petit → hidden delay, seconds. */
   petitToHiddenDelay = 60;
+  /** The compact island stays up (the focus timer is on it). */
+  keepPetit = false;
   /** coucou → petit once the greeting animation ends (no hover). */
   greetAutoCollapseDelay = 0.6;
   /** coucou → petit while the mouse hovers the greeting. */
@@ -108,7 +110,9 @@ export class IslandStateMachine {
     this.clear("petitHide");
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
+      if (this.state !== "petit") return;
+      if (this.keepPetit) this.schedulePetitHide();
+      else this.transition("hidden");
     }, this.petitToHiddenDelay * 1000);
   }
 

@@ -165,6 +165,25 @@ body {
   transition: opacity 0.25s ease-in-out;
 }
 
+#focus-clock {
+  position: absolute;
+  height: 16px;
+  font: 600 12px/16px var(--font);
+  font-variant-numeric: tabular-nums;
+  color: #f4505e;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease-in-out;
+}
+
+#focus-clock.break {
+  color: #22c55e;
+}
+
+#focus-clock.paused {
+  color: var(--dim-2);
+}
+
 /* A mini Mochi: the slot is the body, the canvas is larger and overflows it so
    hands, badges and particles are not cut off. */
 .mini {
@@ -1019,6 +1038,42 @@ input[type="range"]::-webkit-slider-thumb {
 
 .habit-streak.on {
   color: #22c55e;
+}
+
+.focus-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 4px;
+}
+
+.focus-face {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.focus-clock {
+  font: 600 34px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.focus-clock.break {
+  color: #22c55e;
+}
+
+.focus-label {
+  font: 500 11px var(--font);
+  color: var(--dim-2);
+}
+
+.focus-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .note-edit {

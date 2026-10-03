@@ -8,6 +8,7 @@ import { Todos } from "./core/todoStore";
 import { nextWake, ringsAt } from "./core/todos";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
+import { Focus } from "./island/focusTimer";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 
 async function main() {
@@ -94,6 +95,7 @@ async function main() {
   syncTodoPill();
   scheduleReminder();
 
+  Focus.attach(island);
   registerHookHandlers(island);
   registerIntegrationHandlers(island);
 
