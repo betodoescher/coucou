@@ -234,6 +234,26 @@ export function upNext(doc: TodoDoc, limit: number): TodoItem[] {
   return doc.items.filter((i) => !i.done).sort(compareTodos).slice(0, limit);
 }
 
+// ── Reminders ─────────────────────────────────────────────────────────────────
+
+export const REMINDER_HOURS = [9, 14];
+
+/** The next 9:00 or 14:00 strictly after `now`. */
+export function nextReminder(now: Date): Date {
+  for (let n = 0; ; n++) {
+    for (const hour of REMINDER_HOURS) {
+      const at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + n, hour);
+      if (at > now) return at;
+    }
+  }
+}
+
+/** Open tasks due today or tomorrow: what a reminder slot opens the island for. */
+export function reminderDue(doc: TodoDoc, now: Date): TodoItem[] {
+  const days = [dayOf(now), dayOf(addDays(now, 1))];
+  return doc.items.filter((i) => !i.done && i.due !== null && days.includes(i.due));
+}
+
 /** Choices for the day picker: no date, the next seven days. */
 export function dayChoices(now: Date): [string, string][] {
   const out: [string, string][] = [["", "No date"]];

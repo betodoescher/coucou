@@ -62,9 +62,17 @@ function handle(island: Island, update: IntegrationUpdate) {
         task.pillBadge = event.success ? "finished" : "error";
       }
       Sound.play(event.success ? "finish" : "error");
-      // Same as the Swift pollers: show the compact island so the badge is seen,
-      // but never steal the screen for a successful deploy.
-      island.reveal();
+      if (event.alert) {
+        // A failed CI run or a review request: open on this pill's card.
+        State.focusId = update.id;
+        task.pillBadge = null;
+        if (State.mode === "expanded") island.setView("overview");
+        else island.alert("overview");
+      } else {
+        // Same as the Swift pollers: show the compact island so the badge is seen,
+        // but never steal the screen for a successful deploy.
+        island.reveal();
+      }
 
       const existing = clearTimers.get(update.id);
       if (existing != null) window.clearTimeout(existing);

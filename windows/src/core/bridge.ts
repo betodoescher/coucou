@@ -129,7 +129,8 @@ export interface IntegrationUpdate {
   id: string;
   data: Record<string, unknown>;
   error: string | null;
-  event: { success: boolean; label: string; detail: string | null } | null;
+  /** `alert`: open the island on it rather than only badging the pill. */
+  event: { success: boolean; label: string; detail: string | null; alert?: boolean } | null;
 }
 
 export type ChatContext =
