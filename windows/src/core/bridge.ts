@@ -118,6 +118,9 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Claude tokens and Kiro credits since `sinceMs`, from their local logs. */
+  usageToday: (sinceMs: number) =>
+    call<{ claudeTokens: number; kiroCredits: number }>("usage_today", { sinceMs }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 

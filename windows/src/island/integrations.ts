@@ -35,6 +35,33 @@ export async function refreshConfigured() {
   State.notify();
 }
 
+// ── Today's AI usage ──────────────────────────────────────────────────────────
+
+/** Cursor keeps no usage on disk: its prompts are counted from the hooks, per day. */
+const cursorKey = () => `coucou.cursorRequests.${new Date().toDateString()}`;
+
+export function countCursorPrompt() {
+  localStorage.setItem(cursorKey(), String(Number(localStorage.getItem(cursorKey()) ?? 0) + 1));
+  void refreshUsage(true);
+}
+
+let usageReadAt = 0;
+
+/** Re-reads the logs at most every 30 s, unless an agent just finished. */
+export async function refreshUsage(force = false) {
+  if (!force && performance.now() - usageReadAt < 30_000) return;
+  usageReadAt = performance.now();
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const read = await Bridge.usageToday(midnight.getTime());
+  State.usage = {
+    claudeTokens: read?.claudeTokens ?? 0,
+    kiroCredits: read?.kiroCredits ?? 0,
+    cursorRequests: Number(localStorage.getItem(cursorKey()) ?? 0),
+  };
+  State.notify();
+}
+
 function handle(island: Island, update: IntegrationUpdate) {
   if (State.paused) return;
 

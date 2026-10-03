@@ -452,7 +452,23 @@ function homeSummary() {
     agents: agents.length,
     waiting: agents.filter((t) => t.state === "approval" || t.pillBadge === "approval").length,
     weather: State.integrations.weather ?? null,
+    usage: State.usage,
   };
+}
+
+function tokens(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+/** "Claude 1.2M · Kiro 0.9 cr · Cursor 3", only the agents used today. */
+function usageText(u: NonNullable<typeof State.usage>): string {
+  const bits: string[] = [];
+  if (u.claudeTokens) bits.push(`Claude ${tokens(u.claudeTokens)}`);
+  if (u.kiroCredits >= 0.01) bits.push(`Kiro ${u.kiroCredits.toFixed(u.kiroCredits < 10 ? 2 : 1)} cr`);
+  if (u.cursorRequests) bits.push(`Cursor ${u.cursorRequests}`);
+  return bits.join(" · ");
 }
 
 /** Changes whenever the home card would draw differently. */
@@ -502,7 +518,15 @@ function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
     h("span", { class: "int-name", text: bits.join(" · ") }),
   );
 
-  return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine);
+  const used = s.usage ? usageText(s.usage) : "";
+  const usageLine = used
+    ? h("div", {
+        class: "int-status",
+        title: "AI used today: Claude tokens, Kiro credits, Cursor prompts",
+      }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
+    : null;
+
+  return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine, usageLine);
 }
 
 export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {

@@ -181,6 +181,9 @@ class AppState {
 
   integrations: Record<string, IntegrationInfo> = {};
 
+  /** Today's AI usage for the home card; null until first read. */
+  usage: { claudeTokens: number; kiroCredits: number; cursorRequests: number } | null = null;
+
   lastActivity = performance.now();
 
   settings: Settings = { ...DEFAULT_SETTINGS };
