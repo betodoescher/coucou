@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
   addTodo, compareTodos, dayChoices, dueCount, editTodo, upNext, dueLabel, parseQuickAdd, removeList, toggleTodo, visibleTodos,
+  nextReminder, reminderDue,
   EMPTY_DOC, type TodoItem,
 } from "../src/core/todos.ts";
 
@@ -75,6 +76,16 @@ assert.equal(addTodo(EMPTY_DOC, "x", now, { priority: 2 })!.items[0].priority, 2
 assert.equal(addTodo(EMPTY_DOC, "x !3", now, { priority: 2 })!.items[0].priority, 3);
 assert.deepEqual(upNext(doc, 5).map((i) => i.title), ["Slides"], "done tasks are not up next");
 assert.deepEqual(dayChoices(now).slice(0, 3), [["", "No date"], ["2026-10-02", "Today"], ["2026-10-03", "Tomorrow"]]);
+
+assert.deepEqual(nextReminder(new Date(2026, 9, 2, 8, 59)), new Date(2026, 9, 2, 9));
+assert.deepEqual(nextReminder(new Date(2026, 9, 2, 9, 0)), new Date(2026, 9, 2, 14), "strictly after");
+assert.deepEqual(nextReminder(now), new Date(2026, 9, 3, 9), "after 14:00: tomorrow 9:00");
+assert.deepEqual(nextReminder(new Date(2026, 11, 31, 20)), new Date(2027, 0, 1, 9));
+assert.deepEqual(
+  reminderDue({ ...EMPTY_DOC, items }, now).map((i) => i.id),
+  ["tomorrow", "today-low", "today-high"],
+  "due today or tomorrow, open; not overdue or undated",
+);
 
 doc = removeList(doc, doc.lists[0].id);
 assert.equal(doc.lists.length, 0);

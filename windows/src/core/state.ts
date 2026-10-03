@@ -3,7 +3,10 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 
-export type AgentSource = "claudeCode" | "n8n" | "agent";
+export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
+
+/** The Tasks pill: shown while there are open to-dos, opens the Tasks tab. */
+export const TODO_PILL_ID = "todos";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -236,6 +239,8 @@ class AppState {
       if (isAgentA && !isAgentB) return -1;
       if (isAgentB && !isAgentA) return 1;
       if (isAgentA && isAgentB) return 0;
+      if (a.id === TODO_PILL_ID) return -1;
+      if (b.id === TODO_PILL_ID) return 1;
       // both known integrations → declaration order
       return order.indexOf(a.id) - order.indexOf(b.id);
     });
@@ -249,6 +254,28 @@ class AppState {
     this.tasks.splice(idx, 1);
     if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? "integration_claude";
     this.notify();
+  }
+
+  /** Shows the Tasks pill while `open` to-dos are left, labelled with the count. */
+  setTodoPill(open: number) {
+    const t = this.tasks.find((x) => x.id === TODO_PILL_ID);
+    if (open === 0) {
+      if (t) this.removeTask(TODO_PILL_ID);
+      return;
+    }
+    const name = open === 1 ? "1 task" : `${open} tasks`;
+    if (t) {
+      t.name = name;
+      return;
+    }
+    // After Claude Code and the agent pills, before the integrations.
+    let at = this.tasks.findIndex((x) => x.id === "integration_claude") + 1;
+    while (at < this.tasks.length && this.tasks[at].id.startsWith("agent_")) at++;
+    this.tasks.splice(at, 0, {
+      id: TODO_PILL_ID, name, color: "#60A5FA",
+      state: "idle", stepIndex: 0, steps: [],
+      source: "todos", isIntegration: false,
+    });
   }
 
   /** Creates a dynamic agent_ pill on first event; no-ops if it already exists.

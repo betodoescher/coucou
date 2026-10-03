@@ -695,8 +695,12 @@ mod tests {
         assert_eq!(pre[0]["command"], "orca-hook.sh");
         assert!(pre[1]["command"].as_str().unwrap().contains("--agent cursor preToolUse"));
         assert_eq!(after["hooks"]["beforeShellExecution"][0]["timeout"], 120);
-        // Merging twice does not duplicate.
-        assert_eq!(merged(Target::Cursor, &after), after);
+        // Merging twice does not duplicate. Counted, not compared: another test
+        // moves the home directory, so the relay path can change mid-test.
+        let again = merged(Target::Cursor, &after);
+        for (event, _) in CURSOR_EVENTS {
+            assert_eq!(again["hooks"][*event].as_array().map(Vec::len), after["hooks"][*event].as_array().map(Vec::len));
+        }
         assert_eq!(without_ours(Target::Cursor, &after), existing);
         // A missing file gets the schema version.
         assert_eq!(merged(Target::Cursor, &json!({}))["version"], 1);

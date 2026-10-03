@@ -252,7 +252,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
 
       // With no other agent to show, the card lists the next tasks instead.
-      const showTasks = others.length === 0;
+      const showTasks = others.every((t) => t.source === "todos");
       pills.style.display = showTasks ? "none" : "";
       upNextBox.style.display = showTasks ? "" : "none";
       if (showTasks) {

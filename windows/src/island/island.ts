@@ -10,7 +10,7 @@ import {
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, TODO_PILL_ID } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -113,8 +113,9 @@ export class Island {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
       setFocus: (id) => {
-        State.setFocus(id);
         Sound.play("blip");
+        if (id === TODO_PILL_ID) this.setView("todos");
+        else State.setFocus(id);
       },
       openTerminal: () => {
         const cwd = State.focusTask?.sessionCwd ?? null;
