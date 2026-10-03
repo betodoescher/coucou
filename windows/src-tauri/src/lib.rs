@@ -55,7 +55,7 @@ pub struct BootInfo {
 fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
     let mut settings = shared.settings.lock().unwrap().clone();
     // The real state of ~/.claude/settings.json wins over whatever we stored.
-    settings.hooks_installed = hooks::status().installed;
+    settings.hooks_installed = hooks::status(hooks::Target::Claude).installed;
     let screen = island::screen_info(&app, &settings.screen);
     BootInfo {
         settings,
@@ -226,17 +226,17 @@ fn set_paused(paused: bool) {
     integrations::set_paused(paused);
 }
 
-// ── Claude Code hooks ─────────────────────────────────────────────────────────
+// ── Agent hooks (Claude Code, Cursor, Kiro) ───────────────────────────────────
 
 #[tauri::command]
-fn hooks_status() -> HookStatus {
-    hooks::status()
+fn hooks_status(target: Option<hooks::Target>) -> HookStatus {
+    hooks::status(target.unwrap_or(hooks::Target::Claude))
 }
 
 /// Returns the diff the user has to look at before anything is written.
 #[tauri::command]
-fn hooks_preview(install: bool) -> Result<HookPreview, String> {
-    hooks::preview(install)
+fn hooks_preview(target: Option<hooks::Target>, install: bool) -> Result<HookPreview, String> {
+    hooks::preview(target.unwrap_or(hooks::Target::Claude), install)
 }
 
 /// Only ever called from an explicit click in the settings window.
@@ -244,12 +244,17 @@ fn hooks_preview(install: bool) -> Result<HookPreview, String> {
 fn hooks_apply(
     app: AppHandle,
     shared: State<Shared>,
+    target: Option<hooks::Target>,
     install: bool,
     fingerprint: String,
 ) -> Result<String, String> {
+    let target = target.unwrap_or(hooks::Target::Claude);
     // The fingerprint comes from the preview the user actually looked at, so a
     // settings.json that changed in between is refused rather than overwritten.
-    let backup = hooks::write(install, &fingerprint)?;
+    let backup = hooks::write(target, install, &fingerprint)?;
+    if target != hooks::Target::Claude {
+        return Ok(backup);
+    }
     let updated = {
         let mut current = shared.settings.lock().unwrap();
         current.hooks_installed = install;

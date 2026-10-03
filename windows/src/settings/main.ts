@@ -3,7 +3,7 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { Bridge, onEvent, type HookStatus, type HookTarget } from "../core/bridge";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 import { Todos } from "../core/todoStore";
@@ -45,37 +45,62 @@ function renderDiff(text: string): HTMLElement {
   return box;
 }
 
-// ── Claude Code section ───────────────────────────────────────────────────────
+// ── Agent hook sections (Claude Code, Cursor, Kiro) ───────────────────────────
 
-function claudeSection(status: HookStatus): HTMLElement {
+const HOOK_TEXT: Record<HookTarget, {
+  title: string; file: string; on: string; off: string; done: string; keep: string;
+}> = {
+  claude: {
+    title: "Claude Code",
+    file: "settings.json",
+    on: "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there.",
+    off: "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+    done: "Open a new Claude Code session to pick the hooks up.",
+    keep: "This is exactly what will change in your settings.json. Your own hooks are left untouched.",
+  },
+  cursor: {
+    title: "Cursor sessions",
+    file: "hooks.json",
+    on: "Coucou follows your Cursor agent sessions, in the editor and the `agent` CLI: prompts, tools and shell commands show up in the island.",
+    off: "Install the hooks to follow your Cursor agent sessions (editor and `agent` CLI) in the island.",
+    done: "Cursor reloads hooks.json on its own; new agent turns show up in the island.",
+    keep: "This is exactly what will change in your hooks.json. Other tools' hooks are left untouched.",
+  },
+  kiro: {
+    title: "Kiro sessions",
+    file: "Hook file",
+    on: "Coucou follows your Kiro CLI 3 sessions (`kiro-cli --v3 chat`): prompts, tools and shell commands show up in the island.",
+    off: "Install the hooks to follow your Kiro CLI 3 sessions in the island. Kiro 2.x ignores this file; start Kiro with `kiro-cli --v3 chat`.",
+    done: "New `kiro-cli --v3 chat` sessions show up in the island.",
+    keep: "Coucou writes a file of its own; nothing else in ~/.kiro is touched.",
+  },
+};
+
+function hookSection(status: HookStatus, target: HookTarget = "claude"): HTMLElement {
+  const text = HOOK_TEXT[target];
   const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
   const section = h(
     "section",
     {},
-    h("h2", {}, statusDot(status.installed), h("span", { text: "Claude Code" })),
+    h("h2", {}, statusDot(status.installed), h("span", { text: text.title })),
     body,
   );
 
   const rebuild = async () => {
-    const fresh = await Bridge.hooksStatus();
+    const fresh = await Bridge.hooksStatus(target);
     if (fresh) Object.assign(status, fresh);
     clear(body);
     draw();
     const head = section.querySelector("h2")!;
     clear(head);
-    head.append(statusDot(status.installed), h("span", { text: "Claude Code" }));
+    head.append(statusDot(status.installed), h("span", { text: text.title }));
   };
 
   function draw() {
     body.append(
-      h("div", {
-        class: "hint",
-        text: status.installed
-          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
-          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
-      }),
+      h("div", { class: "hint", text: status.installed ? text.on : text.off }),
       h("div", { class: "row" },
-        h("label", { text: "settings.json" }),
+        h("label", { text: text.file }),
         h("span", { class: "path", text: status.settingsPath }),
       ),
       h("div", { class: "row" },
@@ -113,12 +138,23 @@ function claudeSection(status: HookStatus): HTMLElement {
       }));
     }
     body.append(actions);
+
+    // One switch for both agents, shown once so two copies can't disagree.
+    if (target === "cursor") {
+      body.append(h("div", { class: "row" },
+        h("label", { text: "Approve shell commands on the island (Cursor and Kiro)" }),
+        toggle(settings.agentApprovals, (v) => {
+          settings.agentApprovals = v;
+          void save();
+        }),
+      ));
+    }
   }
 
   async function showPreview(install: boolean) {
     let preview;
     try {
-      preview = await Bridge.hooksPreview(install);
+      preview = await Bridge.hooksPreview(install, target);
     } catch (err) {
       // An unreadable or invalid settings.json stops here rather than being
       // treated as empty and written over.
@@ -138,26 +174,28 @@ function claudeSection(status: HookStatus): HTMLElement {
       h("div", {
         class: "hint",
         text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
+          ? text.keep
           : "This removes Coucou's entries only. Your own hooks are left untouched.",
       }),
       renderDiff(preview.diff),
-      h("div", { class: "row" },
-        h("span", { class: "path", text: `Backup → ${preview.backup}` }),
-      ),
+      preview.backup
+        ? h("div", { class: "row" }, h("span", { class: "path", text: `Backup → ${preview.backup}` }))
+        : "",
     );
     const confirm = h("button", {
       class: install ? "primary" : "danger",
-      text: install ? "Back up and write" : "Back up and remove",
+      text: preview.backup
+        ? (install ? "Back up and write" : "Back up and remove")
+        : (install ? "Write" : "Remove"),
     });
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
       try {
-        const backup = await Bridge.hooksApply(install, preview.fingerprint);
+        const backup = await Bridge.hooksApply(install, preview.fingerprint, target);
         clear(body);
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: backup ? `Done. Previous file saved as ${backup}. ${text.done}` : `Done. ${text.done}`,
         }));
         window.setTimeout(() => void rebuild(), 2600);
       } catch (err) {
@@ -706,9 +744,10 @@ async function main() {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
-  const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
-  };
+  const noStatus = { installed: false, settingsPath: "", hookPath: "", hookReady: false };
+  const status = (await Bridge.hooksStatus()) ?? noStatus;
+  const cursorHooks = (await Bridge.hooksStatus("cursor")) ?? { ...noStatus };
+  const kiroHooks = (await Bridge.hooksStatus("kiro")) ?? { ...noStatus };
 
   const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
   await Todos.init();
@@ -723,11 +762,13 @@ async function main() {
   clear(root);
   root.append(
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
-    claudeSection(status),
+    hookSection(status),
     apiSection(hasKey),
     chatSection(),
     cursorSection((await Bridge.secretPresent("cursor-api-key")) ?? false),
+    hookSection(cursorHooks, "cursor"),
     kiroSection(),
+    hookSection(kiroHooks, "kiro"),
     integrationsSection(present),
     tasksSection(),
     generalSection(),

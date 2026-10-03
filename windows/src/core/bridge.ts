@@ -72,16 +72,17 @@ export const Bridge = {
   /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),
 
-  // ── Claude Code hooks ─────────────────────────────────────────────────────
-  hooksStatus: () => call<HookStatus>("hooks_status"),
+  // ── Agent hooks (Claude Code, Cursor, Kiro) ───────────────────────────────
+  hooksStatus: (target: HookTarget = "claude") => call<HookStatus>("hooks_status", { target }),
   /** Diff to show before anything is written. `install: false` previews removal. */
-  hooksPreview: (install: boolean) => callOrThrow<HookPreview>("hooks_preview", { install }),
+  hooksPreview: (install: boolean, target: HookTarget = "claude") =>
+    callOrThrow<HookPreview>("hooks_preview", { target, install }),
   /**
-   * Writes ~/.claude/settings.json — only ever after an explicit click, and only
+   * Writes the agent's hook file — only ever after an explicit click, and only
    * when the file still matches the preview the user looked at.
    */
-  hooksApply: (install: boolean, fingerprint: string) =>
-    callOrThrow<string>("hooks_apply", { install, fingerprint }),
+  hooksApply: (install: boolean, fingerprint: string, target: HookTarget = "claude") =>
+    callOrThrow<string>("hooks_apply", { target, install, fingerprint }),
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
@@ -147,6 +148,8 @@ export interface CursorStatus {
   status: string;
   loggedIn: boolean;
 }
+
+export type HookTarget = "claude" | "cursor" | "kiro";
 
 export interface HookStatus {
   installed: boolean;

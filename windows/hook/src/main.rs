@@ -14,7 +14,8 @@
 //!   island is the whole point. No answer means empty stdout, and Claude Code
 //!   asks in the terminal exactly as if Coucou were not installed.
 //!
-//! Usage: `coucou-hook <EventName>` (the name is also read from the JSON).
+//! Usage: `coucou-hook [--agent cursor|kiro] <EventName>` (the name is also
+//! read from the JSON). Without `--agent` the caller is Claude Code.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -29,7 +30,7 @@ const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
 /// Fields that are pointless to forward and can be enormous (a whole file read,
 /// a full command output). The island never shows them.
-const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
+const DROPPED_FIELDS: &[&str] = &["tool_response", "tool_output", "transcript_path", "user_email"];
 /// Longest string forwarded for any single field; the island truncates to far
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
@@ -45,7 +46,7 @@ mod unix;
 use unix::connect;
 
 fn main() {
-    let Some((payload, event)) = read_event() else { std::process::exit(0) };
+    let Some((payload, event, agent)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
@@ -60,14 +61,66 @@ fn main() {
     });
 
     if let Ok(Some(decision)) = rx.recv_timeout(budget) {
-        if let Some(json) = decision_json(&decision) {
-            let mut out = std::io::stdout();
-            let _ = writeln!(out, "{json}");
-            let _ = out.flush();
+        if let Some((stdout, stderr, code)) = answer(&agent, &decision) {
+            if !stdout.is_empty() {
+                let mut out = std::io::stdout();
+                let _ = writeln!(out, "{stdout}");
+                let _ = out.flush();
+            }
+            if !stderr.is_empty() {
+                let _ = writeln!(std::io::stderr(), "{stderr}");
+            }
+            std::process::exit(code);
         }
     }
-    // Nothing printed: Claude Code asks in the terminal, as if we were not here.
+    // Nothing printed: the agent asks or carries on as if we were not here.
     std::process::exit(0);
+}
+
+/// The island's answer in each agent's own words: stdout, stderr, exit code.
+/// Cursor reads `permission` from stdout; Kiro blocks a tool on exit code 2.
+fn answer(agent: &str, decision: &str) -> Option<(String, &'static str, i32)> {
+    let allow = match decision.trim() {
+        "allow" | "always" => true,
+        "deny" => false,
+        _ => return None,
+    };
+    Some(match (agent, allow) {
+        ("cursor", true) => (r#"{"permission":"allow"}"#.into(), "", 0),
+        ("cursor", false) => (
+            r#"{"permission":"deny","user_message":"Denied from Coucou","agent_message":"The user denied this command from Coucou."}"#.into(),
+            "",
+            0,
+        ),
+        ("kiro", true) => (String::new(), "", 0),
+        ("kiro", false) => (String::new(), "Denied from Coucou", 2),
+        _ => (decision_json(decision)?, "", 0),
+    })
+}
+
+/// Cursor and Kiro name their events their own way; the app speaks Claude
+/// Code. Shell commands become a PermissionRequest so the island can gate them
+/// (the app declines at once unless approvals for agents are turned on).
+fn normalize(agent: &str, event: &str, map: &mut serde_json::Map<String, serde_json::Value>) -> String {
+    use serde_json::{json, Value};
+    let tool = map.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    match (agent, event) {
+        ("cursor", "beforeShellExecution") => {
+            let command = map.get("command").cloned().unwrap_or(Value::Null);
+            map.insert("tool_name".into(), json!("Shell"));
+            map.insert("tool_input".into(), json!({ "command": command }));
+            "PermissionRequest".into()
+        }
+        ("cursor", _) => match event {
+            "beforeSubmitPrompt" => "UserPromptSubmit".into(),
+            _ => {
+                let mut c = event.chars();
+                c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+            }
+        },
+        ("kiro", "PreToolUse") if tool == "execute_bash" || tool == "shell" => "PermissionRequest".into(),
+        _ => event.into(),
+    }
 }
 
 /// The documented PermissionRequest output. Anything we do not recognise prints
@@ -86,8 +139,8 @@ fn decision_json(decision: &str) -> Option<String> {
     ))
 }
 
-/// Reads stdin and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
+/// Reads stdin and returns the payload to forward, the event name and the agent.
+fn read_event() -> Option<(String, String, String)> {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
@@ -118,7 +171,7 @@ fn read_event() -> Option<(String, String)> {
     // Which agent this hook was installed for. Absent means Claude Code,
     // so existing hook commands keep working unchanged.
     if !agent.is_empty() {
-        map.insert("coucou_agent".into(), serde_json::Value::String(agent));
+        map.insert("coucou_agent".into(), serde_json::Value::String(agent.clone()));
     }
     let event = map
         .get("hook_event_name")
@@ -126,10 +179,23 @@ fn read_event() -> Option<(String, String)> {
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
+    let event = normalize(&agent, &event, map);
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
 
     for field in DROPPED_FIELDS {
         map.remove(*field);
+    }
+
+    // Cursor sends an empty cwd; its first workspace root is the project.
+    let root = map
+        .get("workspace_roots")
+        .and_then(|v| v.get(0))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if let Some(root) = root {
+        if map.get("cwd").and_then(|v| v.as_str()).map(str::is_empty).unwrap_or(true) {
+            map.insert("cwd".into(), serde_json::Value::String(root));
+        }
     }
 
     let cwd_missing = map
@@ -165,7 +231,7 @@ fn read_event() -> Option<(String, String)> {
 
     let mut line = payload.to_string();
     line.push('\n');
-    Some((line, event))
+    Some((line, event, agent))
 }
 
 /// Caps every string in the payload. A single Write can carry a whole file.
@@ -243,6 +309,33 @@ mod tests {
         assert!(decision_json("maybe").is_none());
         // The shape the app used to send must not be mistaken for a decision.
         assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+    }
+
+    #[test]
+    fn cursor_and_kiro_answers() {
+        assert_eq!(answer("cursor", "allow").unwrap().0, r#"{"permission":"allow"}"#);
+        assert!(answer("cursor", "deny").unwrap().0.contains(r#""permission":"deny""#));
+        assert_eq!(answer("kiro", "deny").unwrap().2, 2);
+        assert_eq!(answer("kiro", "allow").unwrap(), (String::new(), "", 0));
+        assert!(answer("", "allow").unwrap().0.contains("hookSpecificOutput"));
+        assert!(answer("cursor", "maybe").is_none());
+    }
+
+    #[test]
+    fn cursor_and_kiro_events_are_normalized() {
+        let mut m = serde_json::Map::new();
+        assert_eq!(normalize("cursor", "sessionStart", &mut m), "SessionStart");
+        assert_eq!(normalize("cursor", "postToolUseFailure", &mut m), "PostToolUseFailure");
+        assert_eq!(normalize("cursor", "beforeSubmitPrompt", &mut m), "UserPromptSubmit");
+        m.insert("command".into(), serde_json::json!("ls"));
+        assert_eq!(normalize("cursor", "beforeShellExecution", &mut m), "PermissionRequest");
+        assert_eq!(m["tool_input"]["command"], "ls");
+        let mut k = serde_json::Map::new();
+        k.insert("tool_name".into(), serde_json::json!("execute_bash"));
+        assert_eq!(normalize("kiro", "PreToolUse", &mut k), "PermissionRequest");
+        k.insert("tool_name".into(), serde_json::json!("fs_read"));
+        assert_eq!(normalize("kiro", "PreToolUse", &mut k), "PreToolUse");
+        assert_eq!(normalize("", "preToolUse", &mut k), "preToolUse");
     }
 
     #[test]

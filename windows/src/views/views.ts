@@ -193,8 +193,10 @@ function buildOverview(actions: ViewActions): ViewHost {
 
       // VS Code with a live Claude Code session keeps the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
+      // Hook-driven agents (Cursor, Kiro) have no integration card: always the ticker.
       const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
+        task?.source === "agent" ||
+        (task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0));
 
       if (task && sessionActive) {
         if (mode !== "ticker") {
@@ -207,7 +209,14 @@ function buildOverview(actions: ViewActions): ViewHost {
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.source === "claudeCode" ? "Claude Code" : "n8n" }),
+          h("span", {
+            class: "tool",
+            text: task.source === "claudeCode"
+              ? "Claude Code"
+              : task.source === "agent"
+                ? (task.sessionCwd?.split(/[\\/]/).filter(Boolean).pop() ?? "")
+                : "n8n",
+          }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -433,7 +442,7 @@ function buildError(actions: ViewActions): ViewHost {
     sync() {
       const task = State.focusTask;
       clear(who);
-      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : "Claude Code"));
+      who.append(agentWho(task, task?.source === "n8n" ? "n8n" : task?.source === "agent" ? "" : "Claude Code"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
       detail.textContent = task?.steps.at(-1) ?? "No detail available.";
     },
@@ -454,7 +463,7 @@ function buildFinished(actions: ViewActions): ViewHost {
     el,
     sync() {
       clear(who);
-      who.append(agentWho(State.focusTask, "Claude Code finished"));
+      who.append(agentWho(State.focusTask, State.focusTask?.source === "agent" ? "finished" : "Claude Code finished"));
       title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
     },
   };

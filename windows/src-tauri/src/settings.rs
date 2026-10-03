@@ -28,6 +28,10 @@ pub struct Settings {
     pub cursor_model: String,
     #[serde(default = "default_kiro_model")]
     pub kiro_model: String,
+    /// Cursor and Kiro shell commands wait for Allow/Deny on the island.
+    /// Off: they run as the agent decides, the island only watches.
+    #[serde(default)]
+    pub agent_approvals: bool,
     /// Where the user dragged the island: top-left of the panel, in logical
     /// pixels from the top-left of its display. None = top centre. Owned by
     /// Rust: save_settings never takes it from a page.
@@ -71,6 +75,7 @@ impl Default for Settings {
             chat_providers: default_chat_providers(),
             cursor_model: default_cursor_model(),
             kiro_model: default_kiro_model(),
+            agent_approvals: false,
             island_offset: None,
         }
     }
