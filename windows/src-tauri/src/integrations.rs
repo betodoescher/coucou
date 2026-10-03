@@ -775,14 +775,21 @@ async fn poll_weather(app: AppHandle) {
     let (name, lat, lon) = match cached {
         Some((_, name, lat, lon)) => (name, lat, lon),
         None => {
-            let found = http
-                .get("https://geocoding-api.open-meteo.com/v1/search")
-                .query(&[("name", city.as_str()), ("count", "1"), ("format", "json")])
-                .send()
-                .await;
-            let Ok(found) = found else { return };
-            let json: Value = found.json().await.unwrap_or(json!({}));
-            let Some((name, lat, lon)) = first_place(&json) else {
+            let mut place = None;
+            for (query, qualifier) in geo_queries(&city) {
+                let found = http
+                    .get("https://geocoding-api.open-meteo.com/v1/search")
+                    .query(&[("name", query.as_str()), ("count", "10"), ("format", "json")])
+                    .send()
+                    .await;
+                let Ok(found) = found else { return };
+                let json: Value = found.json().await.unwrap_or(json!({}));
+                place = pick_place(&json, qualifier.as_deref());
+                if place.is_some() {
+                    break;
+                }
+            }
+            let Some((name, lat, lon)) = place else {
                 emit(&app, IntegrationUpdate {
                     id: WEATHER_ID,
                     data: json!({}),
@@ -822,8 +829,31 @@ async fn poll_weather(app: AppHandle) {
     emit(&app, IntegrationUpdate { id: WEATHER_ID, data: weather_data(&name, &json), error: None, event: None });
 }
 
-fn first_place(json: &Value) -> Option<(String, f64, f64)> {
-    let place = json.get("results")?.as_array()?.first()?;
+/// Open-Meteo only matches English country names, and a state only after a
+/// comma: "São Paulo, Brasil" and "Florianópolis SC" find nothing. So: the text
+/// as typed, then the city alone with the rest kept to pick among the results.
+fn geo_queries(city: &str) -> Vec<(String, Option<String>)> {
+    let mut out = vec![(city.to_string(), None)];
+    if let Some((name, rest)) = city.split_once(',') {
+        out.push((name.trim().to_string(), Some(rest.trim().to_string())));
+    } else if let Some((name, last)) = city.rsplit_once(' ') {
+        out.push((name.trim().to_string(), Some(last.trim().to_string())));
+    }
+    out
+}
+
+/// The first result, or the first whose state or country matches `qualifier`
+/// ("SC" = Santa Catarina by initials, "Brasil", "BR", "Santa Catarina").
+fn pick_place(json: &Value, qualifier: Option<&str>) -> Option<(String, f64, f64)> {
+    let results = json.get("results")?.as_array()?;
+    let matches = |place: &Value| {
+        let Some(q) = qualifier.map(str::to_lowercase).filter(|q| !q.is_empty()) else { return false };
+        let field = |k: &str| place.get(k).and_then(Value::as_str).unwrap_or("").to_lowercase();
+        let admin1 = field("admin1");
+        let initials: String = admin1.split_whitespace().filter_map(|w| w.chars().next()).collect();
+        [admin1.clone(), initials, field("country"), field("country_code")].contains(&q)
+    };
+    let place = results.iter().find(|p| matches(p)).or_else(|| results.first())?;
     Some((
         place.get("name")?.as_str()?.to_string(),
         place.get("latitude")?.as_f64()?,
@@ -1010,9 +1040,19 @@ mod tests {
 
     #[test]
     fn weather_reads_open_meteo_shapes() {
-        let geo = json!({ "results": [{ "name": "São Paulo", "latitude": -23.5, "longitude": -46.6 }] });
-        assert_eq!(first_place(&geo), Some(("São Paulo".into(), -23.5, -46.6)));
-        assert_eq!(first_place(&json!({})), None);
+        let geo = json!({ "results": [
+            { "name": "Florianópolis", "admin1": "Acre", "country_code": "BR", "latitude": -9.0, "longitude": -70.0 },
+            { "name": "Florianópolis", "admin1": "Santa Catarina", "country_code": "BR", "latitude": -27.6, "longitude": -48.5 },
+        ] });
+        assert_eq!(pick_place(&geo, Some("SC")).unwrap().1, -27.6);
+        assert_eq!(pick_place(&geo, Some("santa catarina")).unwrap().1, -27.6);
+        assert_eq!(pick_place(&geo, None).unwrap().1, -9.0);
+        assert_eq!(pick_place(&geo, Some("Brasil")).unwrap().1, -9.0);
+        assert_eq!(pick_place(&json!({}), None), None);
+
+        assert_eq!(geo_queries("Florianópolis SC")[1], ("Florianópolis".into(), Some("SC".into())));
+        assert_eq!(geo_queries("São Paulo, Brasil")[1], ("São Paulo".into(), Some("Brasil".into())));
+        assert_eq!(geo_queries("Lisboa").len(), 1);
 
         let forecast = json!({
             "current": { "temperature_2m": 24.3, "weather_code": 2, "is_day": 1 },
