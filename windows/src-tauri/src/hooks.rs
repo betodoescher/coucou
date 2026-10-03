@@ -11,10 +11,21 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use crate::{platform, settings};
+
+/// Which agent's hooks: Claude Code (`~/.claude/settings.json`), Cursor
+/// (`~/.cursor/hooks.json`, editor and `agent` CLI) or Kiro CLI 3
+/// (`~/.kiro/hooks/coucou.json`, a file that is Coucou's alone).
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Target {
+    Claude,
+    Cursor,
+    Kiro,
+}
 
 /// Every event the island reacts to, with the hook timeout written to settings.json.
 /// PermissionRequest waits for a human, so it gets the decision timeout + 10 s.
@@ -32,6 +43,39 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("SubagentStart", 10),
     ("SubagentStop", 10),
 ];
+
+/// Cursor's names. `beforeShellExecution` is the one that can wait for a click
+/// (the relay turns it into a PermissionRequest).
+const CURSOR_EVENTS: &[(&str, u64)] = &[
+    ("sessionStart", 10),
+    ("sessionEnd", 10),
+    ("beforeSubmitPrompt", 10),
+    ("preToolUse", 10),
+    ("postToolUse", 10),
+    ("postToolUseFailure", 10),
+    ("beforeShellExecution", 120),
+    ("stop", 10),
+    ("subagentStart", 10),
+    ("subagentStop", 10),
+];
+
+/// Kiro CLI 3 triggers. PreToolUse of a shell command can wait for a click.
+const KIRO_EVENTS: &[(&str, u64)] = &[
+    ("SessionStart", 10),
+    ("SessionEnd", 10),
+    ("UserPromptSubmit", 10),
+    ("PreToolUse", 120),
+    ("PostToolUse", 10),
+    ("Stop", 10),
+];
+
+fn events(t: Target) -> &'static [(&'static str, u64)] {
+    match t {
+        Target::Claude => HOOK_EVENTS,
+        Target::Cursor => CURSOR_EVENTS,
+        Target::Kiro => KIRO_EVENTS,
+    }
+}
 
 /// Marker that identifies a Coucou entry inside settings.json.
 const MARKER: &str = "coucou-hook";
@@ -56,18 +100,23 @@ pub struct HookPreview {
     pub fingerprint: String,
 }
 
-pub fn settings_path() -> PathBuf {
-    platform::home_dir().join(".claude").join("settings.json")
+pub fn settings_path(t: Target) -> PathBuf {
+    let home = platform::home_dir();
+    match t {
+        Target::Claude => home.join(".claude").join("settings.json"),
+        Target::Cursor => home.join(".cursor").join("hooks.json"),
+        Target::Kiro => home.join(".kiro").join("hooks").join("coucou.json"),
+    }
 }
 
-/// Reads `~/.claude/settings.json`.
+/// Reads the target's settings file.
 ///
 /// The only error that means "start from nothing" is the file not being there.
 /// Everything else — a lock held by another process, a permission problem, JSON
 /// we cannot parse — is reported, because the alternative is treating somebody's
 /// unreadable settings as an empty object and then writing that back over them.
-fn read_settings() -> Result<Value, String> {
-    let path = settings_path();
+fn read_settings(t: Target) -> Result<Value, String> {
+    let path = settings_path(t);
     match std::fs::read(&path) {
         Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
@@ -99,22 +148,30 @@ fn parse_settings(bytes: &[u8], path: &str) -> Result<Value, String> {
 /// The settings as they are, or an empty object when we cannot tell. Only for
 /// read-only paths like `status()`, which must never fail loudly; anything that
 /// writes uses `read_settings()` and surfaces the error instead.
-fn read_settings_lossy() -> Value {
-    read_settings().unwrap_or_else(|_| json!({}))
+fn read_settings_lossy(t: Target) -> Value {
+    read_settings(t).unwrap_or_else(|_| json!({}))
+}
+
+fn agent_flag(t: Target) -> &'static str {
+    match t {
+        Target::Claude => "",
+        Target::Cursor => "--agent cursor ",
+        Target::Kiro => "--agent kiro ",
+    }
 }
 
 #[cfg(windows)]
-fn hook_command(event: &str) -> String {
+fn hook_command(t: Target, event: &str) -> String {
     let exe = settings::hook_exe_path().to_string_lossy().replace('\\', "/");
-    format!("\"{exe}\" {event}")
+    format!("\"{exe}\" {}{event}", agent_flag(t))
 }
 
 /// Claude Code runs the command through `sh`, which still reads `$`, `` ` ``
 /// and `\` inside double quotes. Single quotes keep the path a path, whatever
 /// the home directory is called.
 #[cfg(unix)]
-fn hook_command(event: &str) -> String {
-    format!("{} {event}", sh_quote(&settings::hook_exe_path().to_string_lossy()))
+fn hook_command(t: Target, event: &str) -> String {
+    format!("{} {}{event}", sh_quote(&settings::hook_exe_path().to_string_lossy()), agent_flag(t))
 }
 
 /// `s` as one single-quoted shell word: `'` becomes `'\''`, nothing else is
@@ -124,44 +181,69 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// Claude nests commands in `{"hooks":[{"command"}]}`; Cursor puts `command`
+/// on the entry itself.
 fn entry_is_ours(entry: &Value) -> bool {
-    entry
-        .get("hooks")
-        .and_then(Value::as_array)
-        .map(|hooks| {
-            hooks.iter().any(|h| {
-                h.get("command")
-                    .and_then(Value::as_str)
-                    .map(|c| c.contains(MARKER))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    let is_ours = |h: &Value| {
+        h.get("command")
+            .and_then(Value::as_str)
+            .map(|c| c.contains(MARKER))
+            .unwrap_or(false)
+    };
+    is_ours(entry)
+        || entry
+            .get("hooks")
+            .and_then(Value::as_array)
+            .map(|hooks| hooks.iter().any(is_ours))
+            .unwrap_or(false)
 }
 
 /// Settings with Coucou's hooks added; everything else is left untouched.
-fn merged(existing: &Value) -> Value {
+/// Kiro's file is Coucou's alone, so it is simply the whole thing.
+fn merged(t: Target, existing: &Value) -> Value {
+    if t == Target::Kiro {
+        let hooks: Vec<Value> = KIRO_EVENTS
+            .iter()
+            .map(|(event, timeout)| {
+                json!({
+                    "name": format!("coucou-{event}"),
+                    "trigger": event,
+                    "action": { "type": "command", "command": hook_command(t, event) },
+                    "timeout": timeout,
+                    "enabled": true,
+                })
+            })
+            .collect();
+        return json!({ "version": "v1", "hooks": hooks });
+    }
+
     let mut root = existing.as_object().cloned().unwrap_or_default();
+    if t == Target::Cursor && !root.contains_key("version") {
+        root.insert("version".into(), json!(1));
+    }
     let mut hooks = root
         .get("hooks")
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_else(Map::new);
 
-    for (event, timeout) in HOOK_EVENTS {
+    for (event, timeout) in events(t) {
         let mut list = hooks
             .get(*event)
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
         list.retain(|entry| !entry_is_ours(entry));
-        list.push(json!({
-            "hooks": [{
-                "type": "command",
-                "command": hook_command(event),
-                "timeout": timeout,
-            }]
-        }));
+        list.push(match t {
+            Target::Cursor => json!({ "command": hook_command(t, event), "timeout": timeout }),
+            _ => json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_command(t, event),
+                    "timeout": timeout,
+                }]
+            }),
+        });
         hooks.insert((*event).to_string(), Value::Array(list));
     }
 
@@ -170,7 +252,11 @@ fn merged(existing: &Value) -> Value {
 }
 
 /// Settings with every Coucou entry removed, and nothing else changed.
-fn without_ours(existing: &Value) -> Value {
+/// For Kiro that is no file at all, written as `null`.
+fn without_ours(t: Target, existing: &Value) -> Value {
+    if t == Target::Kiro {
+        return Value::Null;
+    }
     let mut root = existing.as_object().cloned().unwrap_or_default();
     let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
         return Value::Object(root);
@@ -199,6 +285,9 @@ fn without_ours(existing: &Value) -> Value {
 }
 
 fn pretty(v: &Value) -> String {
+    if v.is_null() {
+        return String::new();
+    }
     serde_json::to_string_pretty(v).unwrap_or_default()
 }
 
@@ -212,9 +301,11 @@ fn stamp() -> String {
     )
 }
 
-fn backup_path() -> PathBuf {
-    let p = settings_path();
-    p.with_file_name(format!("settings.json.bak-{}", stamp()))
+/// None for Kiro: its file is Coucou's own, there is nobody else's work to keep.
+fn backup_path(t: Target) -> Option<PathBuf> {
+    let p = settings_path(t);
+    let name = p.file_name()?.to_string_lossy().to_string();
+    (t != Target::Kiro).then(|| p.with_file_name(format!("{name}.bak-{}", stamp())))
 }
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
@@ -228,8 +319,8 @@ fn fingerprint(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-fn current_fingerprint() -> String {
-    match std::fs::read(settings_path()) {
+fn current_fingerprint(t: Target) -> String {
+    match std::fs::read(settings_path(t)) {
         Ok(bytes) => fingerprint(&bytes),
         Err(_) => fingerprint(b""),
     }
@@ -237,36 +328,44 @@ fn current_fingerprint() -> String {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-pub fn status() -> HookStatus {
-    let current = read_settings_lossy();
-    let installed = current
-        .get("hooks")
-        .and_then(Value::as_object)
-        .map(|hooks| {
-            hooks
-                .values()
-                .filter_map(Value::as_array)
-                .flatten()
-                .any(entry_is_ours)
-        })
-        .unwrap_or(false);
+pub fn status(t: Target) -> HookStatus {
+    let current = read_settings_lossy(t);
+    let installed = match t {
+        Target::Kiro => settings_path(t).exists() && current.to_string().contains(MARKER),
+        _ => current
+            .get("hooks")
+            .and_then(Value::as_object)
+            .map(|hooks| {
+                hooks
+                    .values()
+                    .filter_map(Value::as_array)
+                    .flatten()
+                    .any(entry_is_ours)
+            })
+            .unwrap_or(false),
+    };
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
-        settings_path: settings_path().to_string_lossy().to_string(),
+        settings_path: settings_path(t).to_string_lossy().to_string(),
         hook_ready: hook_path.exists(),
         hook_path: hook_path.to_string_lossy().to_string(),
     }
 }
 
-pub fn preview(install: bool) -> Result<HookPreview, String> {
-    let current = read_settings()?;
-    let next = if install { merged(&current) } else { without_ours(&current) };
+/// What the file holds now, as the diff should show it: nothing when absent.
+fn shown(t: Target, current: &Value) -> String {
+    if settings_path(t).exists() { pretty(current) } else { String::new() }
+}
+
+pub fn preview(t: Target, install: bool) -> Result<HookPreview, String> {
+    let current = read_settings(t)?;
+    let next = if install { merged(t, &current) } else { without_ours(t, &current) };
     Ok(HookPreview {
-        diff: unified_diff(&pretty(&current), &pretty(&next)),
-        backup: backup_path().to_string_lossy().to_string(),
-        settings_path: settings_path().to_string_lossy().to_string(),
-        fingerprint: current_fingerprint(),
+        diff: unified_diff(&shown(t, &current), &pretty(&next)),
+        backup: backup_path(t).map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        settings_path: settings_path(t).to_string_lossy().to_string(),
+        fingerprint: current_fingerprint(t),
     })
 }
 
@@ -276,27 +375,34 @@ pub fn preview(install: bool) -> Result<HookPreview, String> {
 /// in between — another tool, another window, the user's own editor — we stop
 /// and make them look at a fresh diff, because the only thing worse than not
 /// installing the hooks is silently reverting somebody else's edit.
-pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
-    let path = settings_path();
+pub fn write(t: Target, install: bool, fingerprint: &str) -> Result<String, String> {
+    let path = settings_path(t);
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
     // Read before the backup: an unreadable file must abort before we touch
     // anything at all.
-    let current = read_settings()?;
-    if current_fingerprint() != fingerprint {
+    let current = read_settings(t)?;
+    if current_fingerprint(t) != fingerprint {
         return Err(format!(
             "{} changed since the preview. Nothing was written — review the new diff.",
             path.display()
         ));
     }
 
-    let backup = backup_path();
-    if path.exists() {
-        std::fs::copy(&path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+    let backup = backup_path(t);
+    if let (Some(backup), true) = (&backup, path.exists()) {
+        std::fs::copy(&path, backup).map_err(|e| format!("backup failed: {e}"))?;
     }
+    let backup = backup.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
 
-    let next = if install { merged(&current) } else { without_ours(&current) };
+    let next = if install { merged(t, &current) } else { without_ours(t, &current) };
+    if next.is_null() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("remove failed: {e}")),
+            _ => Ok(backup),
+        };
+    }
     let mut text = pretty(&next);
     text.push('\n');
 
@@ -316,7 +422,7 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
         let _ = std::fs::remove_file(&temp);
         return Err(format!("write failed: {err}"));
     }
-    Ok(backup.to_string_lossy().to_string())
+    Ok(backup)
 }
 
 /// Writes `bytes` to `temp`, which is about to replace `original`.
@@ -556,7 +662,7 @@ mod tests {
             }
         });
 
-        let after = merged(&existing);
+        let after = merged(Target::Claude, &existing);
         assert_eq!(after["model"], "claude-opus-5");
         assert_eq!(after["theme"], "dark");
         assert_eq!(after["enabledPlugins"], serde_json::json!(["a", "b"]));
@@ -568,10 +674,42 @@ mod tests {
         );
         assert!(pre.iter().any(entry_is_ours), "our own hook was not added");
         assert!(after["hooks"]["SomeEventWeDoNotTouch"].is_array());
+        assert!(!after.to_string().contains("--agent"), "Claude commands carry no agent flag");
 
         // And removing ours puts it back exactly as it was.
-        let cleaned = without_ours(&after);
+        let cleaned = without_ours(Target::Claude, &after);
         assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn cursor_hooks_merge_flat_and_keep_other_tools() {
+        let existing = serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "preToolUse": [{ "command": "orca-hook.sh", "timeout": 10 }],
+                "afterAgentResponse": [{ "command": "keep-me.sh" }]
+            }
+        });
+        let after = merged(Target::Cursor, &existing);
+        let pre = after["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre[0]["command"], "orca-hook.sh");
+        assert!(pre[1]["command"].as_str().unwrap().contains("--agent cursor preToolUse"));
+        assert_eq!(after["hooks"]["beforeShellExecution"][0]["timeout"], 120);
+        // Merging twice does not duplicate.
+        assert_eq!(merged(Target::Cursor, &after), after);
+        assert_eq!(without_ours(Target::Cursor, &after), existing);
+        // A missing file gets the schema version.
+        assert_eq!(merged(Target::Cursor, &json!({}))["version"], 1);
+    }
+
+    #[test]
+    fn kiro_file_is_ours_alone() {
+        let after = merged(Target::Kiro, &json!({}));
+        assert_eq!(after["version"], "v1");
+        let hooks = after["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), KIRO_EVENTS.len());
+        assert!(hooks[0]["action"]["command"].as_str().unwrap().contains("--agent kiro SessionStart"));
+        assert!(without_ours(Target::Kiro, &after).is_null());
     }
 
     #[test]
@@ -630,7 +768,8 @@ mod tests {
         std::fs::create_dir_all(tmp.join(".claude")).unwrap();
         std::env::set_var(platform::HOME_VAR, &tmp);
 
-        let path = settings_path();
+        let c = Target::Claude;
+        let path = settings_path(c);
         assert!(path.starts_with(&tmp), "the test must not touch the real home");
 
         // A real-shaped file, written the way PowerShell 5 would: UTF-8 with BOM.
@@ -640,9 +779,9 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         // Install.
-        let plan = preview(true).expect("a BOM must not stop the preview");
+        let plan = preview(c, true).expect("a BOM must not stop the preview");
         assert!(plan.diff.contains("coucou-hook"), "the diff must show what changes");
-        let backup = write(true, &plan.fingerprint).expect("install should succeed");
+        let backup = write(c, true, &plan.fingerprint).expect("install should succeed");
 
         // The backup holds the original bytes, BOM and all.
         assert_eq!(std::fs::read(&backup).unwrap(), bytes);
@@ -654,21 +793,32 @@ mod tests {
         assert_eq!(after["tui"]["x"], 1);
         let pre = after["hooks"]["PreToolUse"].as_array().unwrap();
         assert!(pre.iter().any(|e| serde_json::to_string(e).unwrap().contains("other-tool.exe")));
-        assert!(status().installed);
+        assert!(status(c).installed);
 
         // A file that moved since the preview is refused, and left alone.
-        let stale = preview(false).unwrap();
+        let stale = preview(c, false).unwrap();
         std::fs::write(&path, br#"{"model":"someone-else-edited-this"}"#).unwrap();
-        let err = write(false, &stale.fingerprint).unwrap_err();
+        let err = write(c, false, &stale.fingerprint).unwrap_err();
         assert!(err.contains("changed since the preview"), "got: {err}");
         let untouched: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(untouched["model"], "someone-else-edited-this");
 
         // Content we cannot parse is refused before anything is written.
         std::fs::write(&path, b"{ broken").unwrap();
-        assert!(preview(true).is_err());
-        assert!(write(true, "whatever").is_err());
+        assert!(preview(c, true).is_err());
+        assert!(write(c, true, "whatever").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"{ broken");
+
+        // Kiro: the file appears on install and is gone on uninstall.
+        let k = Target::Kiro;
+        assert!(!status(k).installed);
+        let plan = preview(k, true).unwrap();
+        assert!(plan.backup.is_empty());
+        write(k, true, &plan.fingerprint).unwrap();
+        assert!(status(k).installed);
+        let plan = preview(k, false).unwrap();
+        write(k, false, &plan.fingerprint).unwrap();
+        assert!(!settings_path(k).exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

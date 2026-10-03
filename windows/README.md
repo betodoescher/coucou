@@ -190,6 +190,14 @@ What changes on Linux:
   in Settings → Tasks. Saved in `todos.json` next to the inbox, written
   atomically; an unreadable file is set aside as `todos.json.broken-…`.
   `npm run check` runs the quick-add and sorting checks.
+- **Cursor and Kiro sessions**: Settings → "Cursor sessions" merges Coucou's
+  entries into `~/.cursor/hooks.json` (editor agent and `agent` CLI; other
+  tools' hooks are kept, with a dated backup and a diff first). Settings →
+  "Kiro sessions" writes `~/.kiro/hooks/coucou.json`, read by Kiro CLI 3
+  (`kiro-cli --v3 chat`); uninstalling deletes it. Each agent gets its own
+  pill with the live ticker. "Approve shell commands on the island" (off by
+  default) holds Cursor's and Kiro's shell commands for Allow/Deny; with no
+  click the agent carries on as it would without Coucou.
 - **Several chats at once**: everything turned on in Settings → Chat is tried
   in order (Cursor, Kiro, then the Claude API) until one answers, so running
   out of credits on one plan hands the chat to the next.

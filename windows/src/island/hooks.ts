@@ -23,9 +23,20 @@ interface HookPayload {
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  /** Kiro's Stop carries the final answer here. */
+  assistant_response?: string;
+  /** Cursor's and Kiro's SessionEnd: how the session ended. */
+  final_status?: string;
+  reason?: string;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
 }
+
+/** Agents Coucou installs hooks for: their pill name and colour. */
+const KNOWN_AGENTS: Record<string, [string, string]> = {
+  cursor: ["Cursor", "#C0C4CC"],
+  kiro: ["Kiro", "#9046FF"],
+};
 
 /** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
 function validateAgent(raw: string | undefined): string | null {
@@ -76,12 +87,18 @@ const TOOL_LABELS: Record<string, string> = {
   MultiEdit: "Modifie",
   NotebookEdit: "Notebook",
   PowerShell: "Exécute",
+  Shell: "Exécute",
+  execute_bash: "Exécute",
+  shell: "Exécute",
+  fs_read: "Lit",
+  fs_write: "Écrit",
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
   const label = TOOL_LABELS[tool] ?? tool;
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
-  const cmd = str("command");
+  // Kiro's fs_* tools use `command` for the operation ("append"), not a shell line.
+  const cmd = tool.startsWith("fs_") ? null : str("command");
   if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
   const path = str("path");
   if (path) return `${label} · ${lastPathComponent(path)}`;
@@ -136,6 +153,11 @@ function clearSession() {
   t.pillBadge = null;
 }
 
+/** Cursor/Kiro pills that already announced the end of this turn. */
+const stopped = new Set<string>();
+/** Pills waiting to go once their session ended and the island closed. */
+const removals = new Map<string, number>();
+
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
 }
@@ -176,11 +198,32 @@ function handleHook(island: Island, payload: HookPayload) {
   /** Ensure the agent pill exists (no-op for Claude Code). */
   const ensurePill = () => {
     if (isExternalAgent) {
-      State.upsertExternalAgent(agentId, validAgent!, agentColor(validAgent!));
+      const pending = removals.get(agentId);
+      if (pending != null) {
+        window.clearTimeout(pending);
+        removals.delete(agentId);
+      }
+      const [label, color] = KNOWN_AGENTS[validAgent!] ?? [validAgent!, agentColor(validAgent!)];
+      State.upsertExternalAgent(agentId, label, color);
+      const t = State.tasks.find((x) => x.id === agentId);
+      if (t && cwd) t.sessionCwd = cwd;
     } else {
       upsert(projectName, cwd);
     }
   };
+
+  /** Cursor/Kiro: open the island on this agent, whatever had the focus. */
+  const announce = (kind: "finished" | "error") => {
+    ensurePill();
+    State.focusId = agentId;
+    State.updateTask(agentId, kind);
+    State.setPillBadge(agentId, null);
+    Sound.play(kind === "error" ? "error" : "finish");
+    surface(kind, true);
+    window.setTimeout(() => State.updateTask(agentId, "idle"), 5200);
+  };
+
+  if (name === "SessionStart" || name === "UserPromptSubmit") stopped.delete(agentId);
 
   switch (name) {
     case "SessionStart":
@@ -230,9 +273,16 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
     }
 
-    case "Stop":
+    case "Stop": {
+      const said = payload.message ?? payload.assistant_response;
+      if (isExternalAgent) {
+        if (said) State.appendStep(agentId, said.slice(0, 60));
+        stopped.add(agentId);
+        announce("finished");
+        break;
+      }
       State.updateTask(agentId, "finished");
-      if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
+      if (said) State.appendStep(agentId, said.slice(0, 60));
       Sound.play("finish");
       if (focused) surface("finished", true);
       else State.setPillBadge(agentId, "finished");
@@ -245,6 +295,7 @@ function handleHook(island: Island, payload: HookPayload) {
         }
       }, 5200);
       break;
+    }
 
     case "StopFailure":
       State.updateTask(agentId, "error");
@@ -255,7 +306,22 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "SessionEnd":
       if (isExternalAgent) {
-        State.removeTask(agentId);
+        // `agent -p` sends no Stop: the session's end is the turn's end. A
+        // session that did nothing (a composer opened and closed) stays quiet.
+        const worked = (State.tasks.find((t) => t.id === agentId)?.steps.length ?? 0) > 0;
+        if (!stopped.has(agentId) && worked) {
+          const status = `${payload.final_status ?? ""} ${payload.reason ?? ""}`;
+          announce(/error|fail/i.test(status) ? "error" : "finished");
+        }
+        stopped.delete(agentId);
+        // The pill goes once the island had time to show how it ended.
+        const prev = removals.get(agentId);
+        if (prev != null) window.clearTimeout(prev);
+        removals.set(agentId, window.setTimeout(() => {
+          removals.delete(agentId);
+          State.removeTask(agentId);
+          State.notify();
+        }, (State.settings.autoCloseInterval + 1) * 1000));
       } else {
         State.updateTask(agentId, "idle");
         clearSession();
@@ -271,15 +337,25 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "PermissionRequest": {
-      // External agents do not get an approval card — showing one would look like
-      // a Claude Code request. Decline immediately so the agent re-asks in its
-      // terminal. Approval support for other agents will come with Codex support.
+      const requestId = payload.request_id ?? "";
+      const tool = payload.tool_name ?? "Tool";
+      const input = payload.tool_input ?? {};
+      // Cursor and Kiro send every shell command here (the relay renames their
+      // events). Kiro has no PreToolUse step for it, so the ticker gets it here;
+      // Cursor already sent one. Unless approvals for agents are on, the command
+      // runs as the agent decides.
       if (isExternalAgent) {
-        if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
-        break;
+        ensurePill();
+        State.updateTask(agentId, "working");
+        if (validAgent !== "cursor") State.appendStep(agentId, stepLabel(tool, input));
+        surface("overview", false);
+        if (!State.settings.agentApprovals) {
+          if (requestId) void Bridge.approvalDecline(requestId);
+          break;
+        }
       }
 
-      const requestId = payload.request_id ?? "";
+
       // One card, one request. A second one must never quietly replace the first
       // — that would leave a human staring at request B while request A waits for
       // a decision nobody can give. Hand it straight back to the terminal.
@@ -287,11 +363,10 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      if (!isExternalAgent) upsert(projectName, cwd);
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-      const tool = payload.tool_name ?? "Tool";
-      const input = payload.tool_input ?? {};
       State.pendingApproval = {
+        taskId: agentId,
         requestId,
         sessionId: payload.session_id ?? "",
         tool,
@@ -300,16 +375,18 @@ function handleHook(island: Island, payload: HookPayload) {
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
+      State.updateTask(agentId, "approval");
       State.isPinned = true;
       Sound.play("approval");
-      if (focused) {
+      // Cursor/Kiro always open on their own card, whatever had the focus.
+      if (isExternalAgent) State.focusId = agentId;
+      if (focused || isExternalAgent) {
         island.alert("approval");
       } else {
         // Another agent holds the view, so the card would yank it away. The badge
         // is the signal instead — but it has to be on screen for that to mean
         // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(CLAUDE_ID, "approval");
+        State.setPillBadge(agentId, "approval");
         island.reveal();
       }
       // Coucou answers within 108 s or not at all; after that the terminal has
@@ -320,8 +397,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
+        State.updateTask(agentId, "working");
+        State.setPillBadge(agentId, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);

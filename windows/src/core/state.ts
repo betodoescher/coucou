@@ -22,6 +22,8 @@ export interface AgentTask {
 }
 
 export interface ApprovalInfo {
+  /** The pill the request belongs to. */
+  taskId: string;
   requestId: string;
   sessionId: string;
   tool: string;
@@ -96,6 +98,8 @@ export interface Settings {
   chatProviders: ("anthropic" | "cursor" | "kiro")[];
   cursorModel: string;
   kiroModel: string;
+  /** Cursor and Kiro shell commands wait for Allow/Deny on the island. */
+  agentApprovals: boolean;
   /** Where the island was dragged to; null = top centre. Written by Rust only. */
   islandOffset: [number, number] | null;
 }
@@ -115,6 +119,7 @@ export const DEFAULT_SETTINGS: Settings = {
   chatProviders: ["anthropic"],
   cursorModel: "auto",
   kiroModel: "auto",
+  agentApprovals: false,
   islandOffset: null,
 };
 
