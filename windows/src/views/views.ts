@@ -13,7 +13,7 @@ import { buildPrompt } from "./chat";
 import { buildTodos } from "./todos";
 import { Todos } from "../core/todoStore";
 import {
-  PRIORITY_COLORS, dayOf, dueCount, dueLabel, isOverdue, toggleTodo, upNext, type TodoItem,
+  PRIORITY_COLORS, dayOf, dueCount, isOverdue, toggleTodo, upNext, whenLabel, type TodoItem,
 } from "../core/todos";
 import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -307,7 +307,7 @@ function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewAc
         }),
         h("button", { class: "todo-title", text: item.title, title: "Open tasks", onclick: open }),
         item.due
-          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: dueLabel(item.due, now) })
+          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: whenLabel(item, now) })
           : null,
       ),
     );

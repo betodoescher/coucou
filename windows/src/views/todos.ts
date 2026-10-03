@@ -6,7 +6,7 @@ import { Sound } from "../core/sound";
 import { Todos } from "../core/todoStore";
 import {
   PRIORITY_COLORS, addTodo, dayChoices, dayOf, dueCount, dueLabel, editTodo, isOverdue,
-  removeTodo, toggleTodo, visibleTodos, type Priority, type TodoFields, type TodoFilter, type TodoItem,
+  removeTodo, toggleTodo, visibleTodos, whenLabel, type Priority, type TodoFields, type TodoFilter, type TodoItem,
 } from "../core/todos";
 import type { ViewHost } from "./views";
 
@@ -45,6 +45,14 @@ function fieldPickers(initial: Omit<TodoFields, "title">) {
     picker.style.display = "none";
   });
 
+  // A time only makes sense on a day, so it hides without one.
+  const time = h("input", { type: "time", class: "todo-select todo-time", title: "Remind me at" }) as HTMLInputElement;
+  const paintTime = () => {
+    time.style.display = day.value && day.value !== "pick" ? "" : "none";
+  };
+  day.addEventListener("change", paintTime);
+  picker.addEventListener("change", paintTime);
+
   const prio = h("select", { class: "todo-select", title: "Priority" }) as HTMLSelectElement;
   for (const [v, label] of PRIORITY_LABELS) prio.append(h("option", { value: String(v), text: label }));
   const paintPrio = () => {
@@ -59,19 +67,25 @@ function fieldPickers(initial: Omit<TodoFields, "title">) {
   const set = (f: Omit<TodoFields, "title">) => {
     day.value = f.due ?? "";
     picker.style.display = "none";
+    time.value = f.time ?? "";
     prio.value = String(f.priority);
     listId = f.listId;
     paintPrio();
+    paintTime();
   };
   set(initial);
 
   return {
-    els: [day, picker, prio] as HTMLElement[],
-    read: (): Omit<TodoFields, "title"> => ({
-      due: day.value && day.value !== "pick" ? day.value : null,
-      priority: Number(prio.value) as Priority,
-      listId,
-    }),
+    els: [day, picker, time, prio] as HTMLElement[],
+    read: (): Omit<TodoFields, "title"> => {
+      const due = day.value && day.value !== "pick" ? day.value : null;
+      return {
+        due,
+        time: due && /^\d{2}:\d{2}$/.test(time.value) ? time.value : null,
+        priority: Number(prio.value) as Priority,
+        listId,
+      };
+    },
     set,
   };
 }
@@ -105,6 +119,7 @@ export function buildTodos(onHeightChange: () => void): ViewHost {
   /** What a new task gets from the filter in use. */
   const filterDefaults = (): Omit<TodoFields, "title"> => ({
     due: filter === "today" ? dayOf(new Date()) : null,
+    time: null,
     priority: 0,
     listId: filter !== "all" && filter !== "today" ? filter : null,
   });
@@ -179,7 +194,7 @@ export function buildTodos(onHeightChange: () => void): ViewHost {
       maxlength: "500",
       spellcheck: "false",
     }) as HTMLInputElement;
-    const pickers = fieldPickers(item);
+    const pickers = fieldPickers({ ...item, time: item.time ?? null });
     const close = () => {
       editing = null;
       rowsKey = "";
@@ -252,7 +267,7 @@ export function buildTodos(onHeightChange: () => void): ViewHost {
       item.due
         ? h("span", {
             class: isOverdue(item, today) ? "todo-due late" : "todo-due",
-            text: dueLabel(item.due, now),
+            text: whenLabel(item, now),
           })
         : null,
       h(

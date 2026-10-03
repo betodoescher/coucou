@@ -5,7 +5,7 @@ import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Todos } from "./core/todoStore";
-import { nextReminder, reminderDue } from "./core/todos";
+import { nextWake, ringsAt } from "./core/todos";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
@@ -64,26 +64,31 @@ async function main() {
     void refreshConfigured();
   });
 
+  // One timer to the next 9:00/14:00 slot or task time, no polling; re-aimed
+  // whenever the list changes. A reminder missed by more than half an hour
+  // (the machine was asleep) is skipped, not replayed.
+  let reminderTimer = 0;
+  let lastRing = 0;
+  const scheduleReminder = () => {
+    window.clearTimeout(reminderTimer);
+    // From the last ring, so a timer that fires a hair early never rings twice.
+    const at = nextWake(Todos.doc, new Date(Math.max(Date.now(), lastRing)));
+    reminderTimer = window.setTimeout(() => {
+      lastRing = at.getTime();
+      const late = Date.now() - at.getTime() > 30 * 60_000;
+      if (!State.paused && !late && ringsAt(Todos.doc, at).length) island.alert("todos");
+      scheduleReminder();
+    }, at.getTime() - Date.now());
+  };
+
   const syncTodoPill = () => State.setTodoPill(Todos.doc.items.filter((i) => !i.done).length);
   Todos.subscribe(() => {
     syncTodoPill();
+    scheduleReminder();
     State.notify();
   });
   await Todos.init();
   syncTodoPill();
-
-  // One timer to the next 9:00/14:00, no polling. A slot missed by more than
-  // half an hour (the machine was asleep) is skipped, not replayed.
-  const scheduleReminder = () => {
-    const at = nextReminder(new Date());
-    window.setTimeout(() => {
-      const now = new Date();
-      if (!State.paused && now.getTime() - at.getTime() < 30 * 60_000 && reminderDue(Todos.doc, now).length) {
-        island.alert("todos");
-      }
-      scheduleReminder();
-    }, at.getTime() - Date.now());
-  };
   scheduleReminder();
 
   registerHookHandlers(island);
