@@ -93,6 +93,8 @@ export interface Settings {
   soundEnabled: boolean;
   soundVolume: number;
   autoCloseInterval: number;
+  /** The compact island hides after a minute without the mouse. */
+  autoHide: boolean;
   absenceInterval: number;
   activeIntegrations: string[];
   screen: "primary" | "cursor";
@@ -114,6 +116,7 @@ export const DEFAULT_SETTINGS: Settings = {
   soundEnabled: true,
   soundVolume: 0.12,
   autoCloseInterval: 15,
+  autoHide: true,
   absenceInterval: 180,
   activeIntegrations: [
     "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
