@@ -35,6 +35,36 @@ export async function refreshConfigured() {
   State.notify();
 }
 
+// ── Today's AI usage ──────────────────────────────────────────────────────────
+
+let usageReadAt = 0;
+let plansReadAt = -Infinity;
+
+/** Claude's log at most every 30 s (or when an agent just finished); the
+ *  Cursor and Kiro CLIs, which take seconds to start, every 10 minutes. */
+export async function refreshUsage(force = false) {
+  const now = performance.now();
+  if (now - plansReadAt >= 600_000) {
+    plansReadAt = now;
+    void Bridge.planUsage().then((plans) => {
+      if (!plans) return;
+      State.usage = { claudeTokens: State.usage?.claudeTokens ?? 0, ...plans };
+      State.notify();
+    });
+  }
+  if (!force && now - usageReadAt < 30_000) return;
+  usageReadAt = now;
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const read = await Bridge.usageToday(midnight.getTime());
+  State.usage = {
+    cursor: State.usage?.cursor ?? null,
+    kiro: State.usage?.kiro ?? null,
+    claudeTokens: read?.claudeTokens ?? 0,
+  };
+  State.notify();
+}
+
 function handle(island: Island, update: IntegrationUpdate) {
   if (State.paused) return;
 

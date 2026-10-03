@@ -20,6 +20,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { todayRowCount } from "../views/today";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+import { refreshUsage } from "./integrations";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -274,7 +275,10 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
-    if (mode === "expanded") Sound.play("open");
+    if (mode === "expanded") {
+      Sound.play("open");
+      void refreshUsage();
+    }
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;

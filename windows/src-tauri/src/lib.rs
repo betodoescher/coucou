@@ -14,6 +14,7 @@ mod secrets;
 mod settings;
 mod todos;
 mod tray;
+mod usage;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -417,6 +418,27 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Home card: Claude tokens since the page's local midnight.
+#[tauri::command]
+async fn usage_today(since_ms: i64) -> usage::Usage {
+    tauri::async_runtime::spawn_blocking(move || usage::since(since_ms)).await.unwrap_or_default()
+}
+
+/// Home card: Cursor and Kiro plan usage, as their `/usage` shows it.
+#[tauri::command]
+async fn plan_usage() -> usage::Plans {
+    let kiro = tauri::async_runtime::spawn(kiro_chat::plan_usage());
+    let cursor = cursor_chat::plan_usage().await;
+    let kiro = kiro.await.unwrap_or_else(|e| Err(e.to_string()));
+    if let Err(e) = &cursor {
+        log::line(format!("cursor usage: {e}"));
+    }
+    if let Err(e) = &kiro {
+        log::line(format!("kiro usage: {e}"));
+    }
+    usage::Plans { cursor: cursor.ok(), kiro: kiro.ok() }
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -541,6 +563,8 @@ pub fn run() {
             secret_set,
             secret_clear,
             refresh_integration,
+            usage_today,
+            plan_usage,
             open_n8n,
             open_settings_window,
             set_paused,

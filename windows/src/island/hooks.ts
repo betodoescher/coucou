@@ -7,6 +7,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { CLAUDE_ID, State } from "../core/state";
 import type { Island } from "./island";
+import { refreshUsage } from "./integrations";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -187,6 +188,8 @@ function handleHook(island: Island, payload: HookPayload) {
     Sound.play(kind === "error" ? "error" : "finish");
     surface(kind, true);
     window.setTimeout(() => State.updateTask(agentId, "idle"), 5200);
+    // The agent writes its usage log right after the turn ends.
+    window.setTimeout(() => void refreshUsage(true), 2000);
   };
 
   if (name === "SessionStart" || name === "UserPromptSubmit") stopped.delete(agentId);

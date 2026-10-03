@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::claude::{ChatContext, ChatReply};
@@ -121,6 +121,66 @@ pub async fn status() -> CursorStatus {
     CursorStatus { logged_in, status: first, cli: Some(cli.to_string_lossy().to_string()) }
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+pub struct KiroPlan {
+    pub plan: String,
+    pub used: f64,
+    pub limit: f64,
+    pub resets: String,
+}
+
+/// What `/usage` shows. It costs no credit, but every run leaves an empty
+/// session behind, so it runs in a folder of its own and deletes those.
+pub async fn plan_usage() -> Result<KiroPlan, String> {
+    let cli = cli_path().ok_or("Kiro CLI not found.")?;
+    let dir = crate::settings::local_dir().join("kiro-usage");
+    platform::ensure_private_dir(&dir).map_err(|e| e.to_string())?;
+    let mut cmd = command(&cli);
+    cmd.current_dir(&dir).args(["chat", "--no-interactive", "/usage"]);
+    let out = run(cmd).await;
+    forget_sessions(&cli, &dir).await;
+    let out = out?;
+    let text = strip_ansi(&format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    parse_plan(&text).ok_or_else(|| "Could not read Kiro's usage.".into())
+}
+
+#[derive(Deserialize)]
+struct SessionDir {
+    cwd: String,
+    sessions: Vec<Session>,
+}
+
+#[derive(Deserialize)]
+struct Session {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+}
+
+async fn forget_sessions(cli: &std::path::Path, dir: &std::path::Path) {
+    let mut cmd = command(cli);
+    cmd.current_dir(dir).args(["chat", "--list-sessions", "-f", "json"]);
+    let Ok(out) = run(cmd).await else { return };
+    let dirs: Vec<SessionDir> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    // Only this folder's: the user's own sessions are never touched.
+    for s in dirs.into_iter().filter(|d| std::path::Path::new(&d.cwd) == dir).flat_map(|d| d.sessions) {
+        let mut cmd = command(cli);
+        cmd.current_dir(dir).args(["chat", "--delete-session", &s.session_id]);
+        let _ = run(cmd).await;
+    }
+}
+
+/// "Estimated Usage | resets on 2026-11-01 | KIRO PRO+"
+/// "Credits (37.67 of 2000 covered in plan), 1.9%"
+fn parse_plan(text: &str) -> Option<KiroPlan> {
+    let head = text.lines().find(|l| l.contains("resets on"))?;
+    let resets = head.split("resets on").nth(1)?.split('|').next()?.trim().to_string();
+    let plan = head.rsplit('|').next()?.trim().to_string();
+    let (used, rest) = text.split("Credits (").nth(1)?.split_once(" of ")?;
+    let used = used.trim().replace(',', "").parse().ok()?;
+    let limit = rest.split_whitespace().next()?.replace(',', "").parse().ok()?;
+    Some(KiroPlan { plan, used, limit, resets })
+}
+
 #[derive(Deserialize)]
 struct ModelList {
     models: Vec<Model>,
@@ -173,5 +233,17 @@ mod tests {
             vec![("auto".into(), "auto".into()), ("claude-sonnet-5".into(), "claude-sonnet-5".into())]
         );
         assert!(parse_models(b"not json").is_empty());
+    }
+
+    #[test]
+    fn reads_the_plan_usage() {
+        let text = "Estimated Usage | resets on 2026-11-01 | KIRO PRO+\n\
+            Credits (1,037.67 of 2000 covered in plan), 51.9%\n\
+            Your plan is managed by your organization's administrator.\n";
+        assert_eq!(
+            parse_plan(text),
+            Some(KiroPlan { plan: "KIRO PRO+".into(), used: 1037.67, limit: 2000.0, resets: "2026-11-01".into() })
+        );
+        assert_eq!(parse_plan("error: not logged in"), None);
     }
 }
