@@ -462,13 +462,29 @@ function tokens(n: number): string {
   return String(n);
 }
 
-/** "Claude 1.2M · Kiro 0.9 cr · Cursor 3", only the agents used today. */
-function usageText(u: NonNullable<typeof State.usage>): string {
+const pct = (n: number) => `${n < 10 ? n.toFixed(1).replace(/\.0$/, "") : Math.round(n)}%`;
+const title = (s: string) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+
+/** Line: "Cursor 70% · Kiro 1.9% · Claude 1.2M"; tooltip: the `/usage` details. */
+function usageText(u: NonNullable<typeof State.usage>): [string, string] {
   const bits: string[] = [];
-  if (u.claudeTokens) bits.push(`Claude ${tokens(u.claudeTokens)}`);
-  if (u.kiroCredits >= 0.01) bits.push(`Kiro ${u.kiroCredits.toFixed(u.kiroCredits < 10 ? 2 : 1)} cr`);
-  if (u.cursorRequests) bits.push(`Cursor ${u.cursorRequests}`);
-  return bits.join(" · ");
+  const tips: string[] = [];
+  if (u.cursor) {
+    const c = u.cursor;
+    bits.push(`Cursor ${pct(c.percent)}`);
+    const parts = [c.auto != null ? `Auto ${pct(c.auto)}` : "", c.api != null ? `API ${pct(c.api)}` : ""].filter(Boolean);
+    tips.push(`Cursor ${c.plan}: ${pct(c.percent)} used${parts.length ? ` (${parts.join(", ")})` : ""}${c.resets ? `, resets ${c.resets}` : ""}`);
+  }
+  if (u.kiro) {
+    const k = u.kiro;
+    bits.push(`Kiro ${pct(k.limit ? (k.used / k.limit) * 100 : 0)}`);
+    tips.push(`${title(k.plan)}: ${k.used} of ${k.limit} credits, resets ${k.resets}`);
+  }
+  if (u.claudeTokens) {
+    bits.push(`Claude ${tokens(u.claudeTokens)}`);
+    tips.push(`Claude Code: ${u.claudeTokens.toLocaleString()} tokens today`);
+  }
+  return [bits.join(" · "), tips.join("\n")];
 }
 
 /** Changes whenever the home card would draw differently. */
@@ -518,12 +534,9 @@ function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
     h("span", { class: "int-name", text: bits.join(" · ") }),
   );
 
-  const used = s.usage ? usageText(s.usage) : "";
+  const [used, tip] = s.usage ? usageText(s.usage) : ["", ""];
   const usageLine = used
-    ? h("div", {
-        class: "int-status",
-        title: "AI used today: Claude tokens, Kiro credits, Cursor prompts",
-      }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
+    ? h("div", { class: "int-status", title: tip }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
     : null;
 
   return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine, usageLine);

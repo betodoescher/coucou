@@ -21,6 +21,23 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T |
   }
 }
 
+/** Cursor's `/usage`: percents of the monthly plan. */
+export interface CursorPlan {
+  plan: string;
+  percent: number;
+  auto: number | null;
+  api: number | null;
+  resets: string;
+}
+
+/** Kiro's `/usage`: credits of the monthly plan. */
+export interface KiroPlan {
+  plan: string;
+  used: number;
+  limit: number;
+  resets: string;
+}
+
 export interface BootInfo {
   settings: Settings;
   /** Logical screen rect of the monitor the island lives on. */
@@ -118,9 +135,10 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
-  /** Claude tokens and Kiro credits since `sinceMs`, from their local logs. */
-  usageToday: (sinceMs: number) =>
-    call<{ claudeTokens: number; kiroCredits: number }>("usage_today", { sinceMs }),
+  /** Claude tokens since `sinceMs`, from its local logs. */
+  usageToday: (sinceMs: number) => call<{ claudeTokens: number }>("usage_today", { sinceMs }),
+  /** Cursor and Kiro plan usage from their CLIs' `/usage`; takes ~15 s. */
+  planUsage: () => call<{ cursor: CursorPlan | null; kiro: KiroPlan | null }>("plan_usage"),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 

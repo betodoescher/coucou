@@ -225,6 +225,105 @@ fn parse_models(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CursorPlan {
+    pub plan: String,
+    pub percent: f64,
+    pub auto: Option<f64>,
+    pub api: Option<f64>,
+    pub resets: String,
+}
+
+/// What `/usage` shows. It only exists in the interactive CLI, so the CLI runs
+/// in a pseudo-terminal (`script`), gets the command typed in, and its table is read.
+#[cfg(unix)]
+pub async fn plan_usage() -> Result<CursorPlan, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let cli = cli_path().ok_or("Cursor CLI not found.")?;
+    let dir = crate::settings::local_dir().join("cursor-usage");
+    platform::ensure_private_dir(&dir).map_err(|e| e.to_string())?;
+    let quoted = format!("'{}'", cli.to_string_lossy().replace('\'', r"'\''"));
+    let mut cmd = Command::new("script");
+    cmd.args(["-qfc", &format!("stty cols 120 rows 40; exec {quoted}"), "/dev/null"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    if let Some(key) = secrets::get("cursor-api-key") {
+        cmd.env("CURSOR_API_KEY", key);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("Could not start the Cursor CLI: {e}"))?;
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err("Could not start the Cursor CLI.".into());
+    };
+
+    let read = async {
+        let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+        // Where the output stood at each try; None until the first one.
+        let (mut typed_at, mut tries): (Option<usize>, u32) = (None, 0);
+        loop {
+            match tokio::time::timeout(Duration::from_millis(1500), stdout.read(&mut chunk)).await {
+                Ok(Ok(0)) | Ok(Err(_)) => return Err("The Cursor CLI closed.".to_string()),
+                Ok(Ok(n)) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf);
+                    if typed_at.is_some() && text.contains("Esc to close") {
+                        return Ok(strip_ansi(&text));
+                    }
+                }
+                // The screen has settled. Typed key by key: a pasted burst is
+                // not read as a command. Retyped if the keys went unseen
+                // because the CLI was still starting.
+                Err(_) if !buf.is_empty() && tries < 3 => {
+                    let unseen = typed_at.is_none_or(|at| !String::from_utf8_lossy(&buf[at..]).contains("usage"));
+                    if unseen {
+                        typed_at = Some(buf.len());
+                        tries += 1;
+                        for key in ["/", "u", "s", "a", "g", "e", "\r"] {
+                            stdin.write_all(key.as_bytes()).await.map_err(|e| e.to_string())?;
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    };
+    let text = tokio::time::timeout(Duration::from_secs(45), read)
+        .await
+        .map_err(|_| "Cursor took too long to show its usage.".to_string())??;
+    parse_plan(&text).ok_or_else(|| "Could not read Cursor's usage.".into())
+}
+
+// ponytail: no `script` on Windows; reading `/usage` there needs a ConPTY.
+#[cfg(not(unix))]
+pub async fn plan_usage() -> Result<CursorPlan, String> {
+    Err("Not available on Windows yet.".into())
+}
+
+/// " Usage • Pro            Resets 15 de out."
+/// " Included        69% used     ████"
+fn parse_plan(text: &str) -> Option<CursorPlan> {
+    let table = &text[text.rfind("Usage •")?..];
+    let head = table.lines().next()?.trim_start_matches("Usage •").trim();
+    let (plan, resets) = head.split_once("Resets ").unwrap_or((head, ""));
+    let percent = |name: &str| {
+        table.lines().find_map(|l| {
+            let rest = l.trim().strip_prefix(name)?;
+            rest.split_whitespace().next()?.strip_suffix('%')?.parse().ok()
+        })
+    };
+    Some(CursorPlan {
+        plan: plan.trim().into(),
+        percent: percent("Included")?,
+        auto: percent("Auto"),
+        api: percent("API"),
+        resets: resets.trim().into(),
+    })
+}
+
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -273,5 +372,25 @@ mod tests {
             ]
         );
         assert_eq!(strip_ansi("\u{1b}[32m✓\u{1b}[0m Logged in"), "✓ Logged in");
+    }
+
+    #[test]
+    fn reads_the_usage_table() {
+        let text = "  → /usage   Show plan and on-demand usage\r\n  Auto\r\n\
+            \u{1b}[1m Usage • Pro\u{1b}[22m          Resets 15 de out.\r\n\
+            \x20Monthly plan and on-demand usage\r\n\r\n Category   Current   Usage\r\n\
+            \x20Included   69% used   ████░░\r\n   Auto   68% used   ███░░\r\n\
+            \x20  API   100% used   █████\r\n On-Demand   Disabled   ———\r\n Esc to close\r\n";
+        assert_eq!(
+            parse_plan(&strip_ansi(text)),
+            Some(CursorPlan {
+                plan: "Pro".into(),
+                percent: 69.0,
+                auto: Some(68.0),
+                api: Some(100.0),
+                resets: "15 de out.".into(),
+            })
+        );
+        assert_eq!(parse_plan("Not logged in"), None);
     }
 }

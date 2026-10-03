@@ -1,10 +1,10 @@
-// Today's AI usage, read from the agents' own local logs. No network.
-// The formats are undocumented: anything that doesn't parse counts as zero.
+// AI usage for the home card.
 //
-// Claude Code: ~/.claude/projects/*/*.jsonl, `message.usage` on assistant lines,
-// repeated per streamed chunk, so deduplicated by message id + request id.
-// Kiro: ~/.kiro/sessions/cli/*.json (`metering_usage` per turn) and
-// ~/.kiro/sessions/*/sess_*/messages.jsonl (`usage_summary` lines).
+// Claude Code: today's tokens, read from ~/.claude/projects/*/*.jsonl. The
+// format is undocumented: anything that doesn't parse counts as zero.
+// `message.usage` is repeated per streamed chunk, so it is deduplicated by
+// message id + request id.
+// Cursor and Kiro: the plan usage their own `/usage` command shows.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -16,7 +16,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
     pub claude_tokens: u64,
-    pub kiro_credits: f64,
+}
+
+#[derive(Serialize, Default)]
+pub struct Plans {
+    pub cursor: Option<crate::cursor_chat::CursorPlan>,
+    pub kiro: Option<crate::kiro_chat::KiroPlan>,
 }
 
 /// Usage since `since_ms` (the local midnight, from the page).
@@ -26,40 +31,18 @@ pub fn since(since_ms: i64) -> Usage {
     let mut usage = Usage::default();
 
     let mut seen = HashSet::new();
-    for file in recent(&home.join(".claude").join("projects"), 2, cutoff, |p| ext(p, "jsonl")) {
-        for line in read(&file).lines() {
+    for file in recent(&home.join(".claude").join("projects"), 2, cutoff) {
+        for line in std::fs::read_to_string(&file).unwrap_or_default().lines() {
             if let Ok(v) = serde_json::from_str::<Value>(line) {
                 usage.claude_tokens += claude_tokens(&v, since_ms, &mut seen);
-            }
-        }
-    }
-
-    let kiro = home.join(".kiro").join("sessions");
-    for file in recent(&kiro.join("cli"), 1, cutoff, |p| ext(p, "json")) {
-        if let Ok(v) = serde_json::from_str::<Value>(&read(&file)) {
-            usage.kiro_credits += kiro_cli_credits(&v, since_ms);
-        }
-    }
-    for file in recent(&kiro, 3, cutoff, |p| p.file_name().is_some_and(|n| n == "messages.jsonl")) {
-        for line in read(&file).lines().filter(|l| l.contains("usage_summary")) {
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
-                usage.kiro_credits += kiro_summary_credits(&v, since_ms);
             }
         }
     }
     usage
 }
 
-fn ext(p: &Path, want: &str) -> bool {
-    p.extension().is_some_and(|e| e == want)
-}
-
-fn read(p: &Path) -> String {
-    std::fs::read_to_string(p).unwrap_or_default()
-}
-
-/// Files under `dir` (at most `depth` levels down) modified since `cutoff`.
-fn recent(dir: &Path, depth: u32, cutoff: SystemTime, keep: impl Fn(&Path) -> bool + Copy) -> Vec<PathBuf> {
+/// `.jsonl` files under `dir` (at most `depth` levels down) modified since `cutoff`.
+fn recent(dir: &Path, depth: u32, cutoff: SystemTime) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else { return out };
     for entry in entries.flatten() {
@@ -67,9 +50,9 @@ fn recent(dir: &Path, depth: u32, cutoff: SystemTime, keep: impl Fn(&Path) -> bo
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
             if depth > 1 {
-                out.extend(recent(&path, depth - 1, cutoff, keep));
+                out.extend(recent(&path, depth - 1, cutoff));
             }
-        } else if keep(&path) && meta.modified().is_ok_and(|m| m >= cutoff) {
+        } else if path.extension().is_some_and(|e| e == "jsonl") && meta.modified().is_ok_and(|m| m >= cutoff) {
             out.push(path);
         }
     }
@@ -90,35 +73,6 @@ fn claude_tokens(v: &Value, since_ms: i64, seen: &mut HashSet<String>) -> u64 {
         .iter()
         .filter_map(|k| usage.get(k).and_then(Value::as_u64))
         .sum()
-}
-
-fn kiro_cli_credits(v: &Value, since_ms: i64) -> f64 {
-    let Some(turns) = v.pointer("/session_state/conversation_metadata/user_turn_metadatas").and_then(Value::as_array)
-    else {
-        return 0.0;
-    };
-    turns
-        .iter()
-        .filter(|t| t.get("end_timestamp").and_then(Value::as_str).and_then(rfc3339_ms).is_some_and(|t| t >= since_ms))
-        .flat_map(|t| t.get("metering_usage").and_then(Value::as_array).cloned().unwrap_or_default())
-        .filter(|m| m.get("unit").and_then(Value::as_str) == Some("credit"))
-        .filter_map(|m| m.get("value").and_then(Value::as_f64))
-        .sum()
-}
-
-fn kiro_summary_credits(v: &Value, since_ms: i64) -> f64 {
-    if !v.get("timestamp").and_then(Value::as_str).and_then(rfc3339_ms).is_some_and(|t| t >= since_ms) {
-        return 0.0;
-    }
-    v.pointer("/payload/promptTurnSummaries")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter(|s| s.get("unit").and_then(Value::as_str) == Some("credit"))
-                .filter_map(|s| s.get("usage").and_then(Value::as_f64))
-                .sum()
-        })
-        .unwrap_or(0.0)
 }
 
 /// "2026-10-03T13:28:40.019976657Z" or "...+02:00" → Unix milliseconds.
@@ -181,17 +135,5 @@ mod tests {
         assert_eq!(claude_tokens(&line("2026-10-03T12:00:00Z", "m1"), since, &mut seen), 100);
         assert_eq!(claude_tokens(&line("2026-10-03T12:00:01Z", "m1"), since, &mut seen), 0);
         assert_eq!(claude_tokens(&line("2026-10-02T12:00:00Z", "m2"), since, &mut seen), 0);
-
-        let cli = json!({ "session_state": { "conversation_metadata": { "user_turn_metadatas": [
-            { "end_timestamp": "2026-10-03T13:28:40.019976657Z", "metering_usage": [{ "value": 0.35, "unit": "credit" }] },
-            { "end_timestamp": "2026-10-02T13:28:40Z", "metering_usage": [{ "value": 9.0, "unit": "credit" }] },
-            { "end_timestamp": null, "metering_usage": [{ "value": 9.0, "unit": "credit" }] }
-        ] } } });
-        assert_eq!(kiro_cli_credits(&cli, since), 0.35);
-
-        let summary = json!({ "timestamp": "2026-10-03T13:56:47.875Z", "payload": {
-            "type": "usage_summary", "promptTurnSummaries": [{ "unit": "credit", "usage": 0.12 }]
-        } });
-        assert_eq!(kiro_summary_credits(&summary, since), 0.12);
     }
 }

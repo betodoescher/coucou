@@ -37,27 +37,30 @@ export async function refreshConfigured() {
 
 // ── Today's AI usage ──────────────────────────────────────────────────────────
 
-/** Cursor keeps no usage on disk: its prompts are counted from the hooks, per day. */
-const cursorKey = () => `coucou.cursorRequests.${new Date().toDateString()}`;
-
-export function countCursorPrompt() {
-  localStorage.setItem(cursorKey(), String(Number(localStorage.getItem(cursorKey()) ?? 0) + 1));
-  void refreshUsage(true);
-}
-
 let usageReadAt = 0;
+let plansReadAt = -Infinity;
 
-/** Re-reads the logs at most every 30 s, unless an agent just finished. */
+/** Claude's log at most every 30 s (or when an agent just finished); the
+ *  Cursor and Kiro CLIs, which take seconds to start, every 10 minutes. */
 export async function refreshUsage(force = false) {
-  if (!force && performance.now() - usageReadAt < 30_000) return;
-  usageReadAt = performance.now();
+  const now = performance.now();
+  if (now - plansReadAt >= 600_000) {
+    plansReadAt = now;
+    void Bridge.planUsage().then((plans) => {
+      if (!plans) return;
+      State.usage = { claudeTokens: State.usage?.claudeTokens ?? 0, ...plans };
+      State.notify();
+    });
+  }
+  if (!force && now - usageReadAt < 30_000) return;
+  usageReadAt = now;
   const midnight = new Date();
   midnight.setHours(0, 0, 0, 0);
   const read = await Bridge.usageToday(midnight.getTime());
   State.usage = {
+    cursor: State.usage?.cursor ?? null,
+    kiro: State.usage?.kiro ?? null,
     claudeTokens: read?.claudeTokens ?? 0,
-    kiroCredits: read?.kiroCredits ?? 0,
-    cursorRequests: Number(localStorage.getItem(cursorKey()) ?? 0),
   };
   State.notify();
 }

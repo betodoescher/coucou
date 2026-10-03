@@ -7,7 +7,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { CLAUDE_ID, State } from "../core/state";
 import type { Island } from "./island";
-import { countCursorPrompt, refreshUsage } from "./integrations";
+import { refreshUsage } from "./integrations";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -203,7 +203,6 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "UserPromptSubmit": {
       ensurePill();
-      if (validAgent === "cursor") countCursorPrompt();
       State.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
