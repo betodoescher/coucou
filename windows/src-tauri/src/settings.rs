@@ -10,6 +10,9 @@ pub struct Settings {
     pub sound_enabled: bool,
     pub sound_volume: f64,
     pub auto_close_interval: f64,
+    /// The compact island hides after a minute without the mouse. Off: it stays.
+    #[serde(default = "default_true")]
+    pub auto_hide: bool,
     pub absence_interval: f64,
     pub active_integrations: Vec<String>,
     /// "primary" = the main display, "cursor" = whichever display the mouse is on.
@@ -39,6 +42,10 @@ pub struct Settings {
     pub island_offset: Option<(f64, f64)>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_model() -> String {
     crate::claude::DEFAULT_MODEL.to_string()
 }
@@ -61,6 +68,7 @@ impl Default for Settings {
             sound_enabled: true,
             sound_volume: 0.12,
             auto_close_interval: 15.0,
+            auto_hide: true,
             absence_interval: 180.0,
             active_integrations: vec![
                 "integration_resend".into(),
@@ -104,4 +112,17 @@ pub fn save(settings: &Settings) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(settings)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(settings_path(), json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn older_settings_keep_auto_hide_on() {
+        let mut json = serde_json::to_value(Settings::default()).unwrap();
+        json.as_object_mut().unwrap().remove("autoHide");
+        let loaded: Settings = serde_json::from_value(json).unwrap();
+        assert!(loaded.auto_hide);
+    }
 }
