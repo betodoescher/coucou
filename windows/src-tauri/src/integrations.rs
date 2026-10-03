@@ -39,6 +39,8 @@ pub struct IntegrationEvent {
     pub success: bool,
     pub label: String,
     pub detail: Option<String>,
+    /// Open the island on it rather than only badging the pill.
+    pub alert: bool,
 }
 
 fn emit(app: &AppHandle, update: IntegrationUpdate) {
@@ -66,7 +68,7 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
-    spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn(app.clone(), "integration_github", 7, 120, poll_github);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app, "integration_notion", 9, 300, poll_notion);
 }
@@ -249,7 +251,7 @@ async fn poll_stripe(app: AppHandle) {
                 let cents = payments[0].get("amount").and_then(Value::as_i64).unwrap_or(0);
                 format!("{:.2}", cents as f64 / 100.0)
             });
-        Some(IntegrationEvent { success: true, label, detail: None })
+        Some(IntegrationEvent { success: true, label, detail: None, alert: false })
     } else {
         None
     };
@@ -263,6 +265,146 @@ async fn poll_stripe(app: AppHandle) {
 }
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
+
+/// How many recently pushed repositories get their latest Actions run checked.
+const GITHUB_CI_REPOS: usize = 6;
+
+async fn github_get(http: &reqwest::Client, token: &str, url: &str) -> Option<Value> {
+    let r = http
+        .get(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "Coucou")
+        .send()
+        .await
+        .ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    r.json().await.ok()
+}
+
+/// Search results as the card's rows: newest first.
+fn github_prs(search: Option<Value>) -> (Vec<Value>, i64) {
+    let Some(v) = search else { return (Vec::new(), 0) };
+    let total = v.get("total_count").and_then(Value::as_i64).unwrap_or(0);
+    let items = v
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    let repo = i.get("repository_url")?.as_str()?.rsplit('/').next()?.to_string();
+                    Some(json!({
+                        "id": i.get("id")?.as_i64()?.to_string(),
+                        "title": i.get("title")?.as_str()?,
+                        "repo": repo,
+                        "number": i.get("number")?.as_i64()?,
+                        "url": i.get("html_url")?.as_str()?,
+                        "createdAt": i.get("created_at")?.as_str()?,
+                    }))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (items, total)
+}
+
+/// Open PRs waiting for the user's review, open PRs in their organisations,
+/// and the latest Actions run of their most recently pushed repositories.
+/// A failed run or a new review request opens the island; a new PR only badges.
+async fn poll_github_activity(http: &reqwest::Client, token: &str, login: &str) -> (Value, Option<IntegrationEvent>) {
+    let api = "https://api.github.com";
+    let orgs: Vec<String> = github_get(http, token, &format!("{api}/user/orgs?per_page=50"))
+        .await
+        .and_then(|v| v.as_array().cloned())
+        .map(|l| l.iter().filter_map(|o| o.get("login")?.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+
+    let search = |q: String| format!("{api}/search/issues?q={}&sort=created&order=desc&per_page=5", q.replace(' ', "+"));
+    let (reviews, _) = github_prs(
+        github_get(http, token, &search("is:pr is:open archived:false review-requested:@me".into())).await,
+    );
+    let scope = if orgs.is_empty() {
+        format!("user:{login}")
+    } else {
+        orgs.iter().map(|o| format!("org:{o}")).collect::<Vec<_>>().join(" ")
+    };
+    let (prs, open_prs) =
+        github_prs(github_get(http, token, &search(format!("is:pr is:open archived:false {scope}"))).await);
+
+    let mut failures: Vec<Value> = Vec::new();
+    let repos = github_get(
+        http,
+        token,
+        &format!("{api}/user/repos?sort=pushed&per_page={GITHUB_CI_REPOS}&affiliation=owner,organization_member"),
+    )
+    .await
+    .and_then(|v| v.as_array().cloned())
+    .unwrap_or_default();
+    for repo in repos {
+        let Some(full) = repo.get("full_name").and_then(Value::as_str) else { continue };
+        let runs = github_get(http, token, &format!("{api}/repos/{full}/actions/runs?per_page=1")).await;
+        let Some(run) = runs.as_ref().and_then(|v| v.get("workflow_runs")).and_then(|v| v.get(0)) else {
+            continue;
+        };
+        if run.get("conclusion").and_then(Value::as_str) == Some("failure") {
+            failures.push(json!({
+                "id": run.get("id").and_then(Value::as_i64).unwrap_or(0).to_string(),
+                "repo": repo.get("name").and_then(Value::as_str).unwrap_or(full),
+                "workflow": run.get("name").and_then(Value::as_str).unwrap_or("CI"),
+                "branch": run.get("head_branch").and_then(Value::as_str).unwrap_or(""),
+                "url": run.get("html_url").and_then(Value::as_str).unwrap_or(""),
+                "createdAt": run.get("updated_at").and_then(Value::as_str).unwrap_or(""),
+            }));
+        }
+    }
+
+    // Every key is checked on every poll so the first one only fills the card.
+    let newest = |list: &[Value]| {
+        list.iter()
+            .filter_map(|v| v.get("id")?.as_str()?.parse::<i64>().ok())
+            .max()
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    };
+    let (run_id, review_id, pr_id) = (newest(&failures), newest(&reviews), newest(&prs));
+    let new_run = !run_id.is_empty() && is_new("github_run", &run_id);
+    let new_review = !review_id.is_empty() && is_new("github_review", &review_id);
+    let new_pr = !pr_id.is_empty() && is_new("github_pr", &pr_id);
+
+    let find = |list: &[Value], id: &str| list.iter().find(|v| v["id"] == id).cloned().unwrap_or(json!({}));
+    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let event = if new_run {
+        let r = find(&failures, &run_id);
+        Some(IntegrationEvent {
+            success: false,
+            label: format!("CI failed · {}", s(&r, "repo")),
+            detail: Some(format!("{} · {}", s(&r, "workflow"), s(&r, "branch"))),
+            alert: true,
+        })
+    } else if new_review {
+        let p = find(&reviews, &review_id);
+        Some(IntegrationEvent {
+            success: true,
+            label: format!("Review requested · {}", s(&p, "repo")),
+            detail: Some(s(&p, "title")),
+            alert: true,
+        })
+    } else if new_pr {
+        let p = find(&prs, &pr_id);
+        Some(IntegrationEvent {
+            success: true,
+            label: format!("New PR · {}", s(&p, "repo")),
+            detail: Some(s(&p, "title")),
+            alert: false,
+        })
+    } else {
+        None
+    };
+
+    (json!({ "reviews": reviews, "prs": prs, "openPrs": open_prs, "failures": failures }), event)
+}
 
 async fn poll_github(app: AppHandle) {
     let Some(token) = secrets::get("github-token") else { return };
@@ -315,12 +457,11 @@ async fn poll_github(app: AppHandle) {
         _ => 0,
     };
 
-    emit(&app, IntegrationUpdate {
-        id: "integration_github",
-        data: json!({ "totalRepos": public + private, "totalStars": stars }),
-        error: None,
-        event: None,
-    });
+    let login = json.get("login").and_then(Value::as_str).unwrap_or("").to_string();
+    let (mut data, event) = poll_github_activity(&http, &token, &login).await;
+    data["totalRepos"] = json!(public + private);
+    data["totalStars"] = json!(stars);
+    emit(&app, IntegrationUpdate { id: "integration_github", data, error: None, event });
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────────────
@@ -384,6 +525,7 @@ async fn poll_vercel(app: AppHandle) {
             success,
             label: latest.get("projectName")?.as_str()?.to_string(),
             detail: None,
+            alert: false,
         })
     });
 
@@ -691,7 +833,7 @@ async fn poll_n8n(app: AppHandle) {
         id: "integration_n8n",
         data: json!({ "workflow": name, "status": status }),
         error: None,
-        event: Some(IntegrationEvent { success, label: name, detail }),
+        event: Some(IntegrationEvent { success, label: name, detail, alert: false }),
     });
 }
 

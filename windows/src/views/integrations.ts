@@ -216,6 +216,37 @@ function githubCard(): HTMLElement {
   const stars = Number(d.totalStars ?? 0);
   const repos = Number(d.totalRepos ?? 0);
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+  // Failed CI first, then PRs waiting for your review, then the org's open PRs.
+  const items: [string, string, string, unknown][] = [
+    ...arr("integration_github", "failures").map((f): [string, string, string, unknown] =>
+      ["#F4505E", `${f.repo} · ${f.workflow}`, String(f.url ?? ""), f.createdAt]),
+    ...arr("integration_github", "reviews").map((p): [string, string, string, unknown] =>
+      ["#F5A524", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
+    ...arr("integration_github", "prs")
+      .filter((p) => !arr("integration_github", "reviews").some((r) => r.id === p.id))
+      .map((p): [string, string, string, unknown] =>
+        ["#22C55E", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
+  ];
+  if (items.length > 0) {
+    const rows = h("div", { class: "int-rows" });
+    items.slice(0, 3).forEach(([accent, text, url, at], i) => {
+      const row = listRow(
+        accent,
+        i === 0,
+        h("span", { class: "int-name", text }),
+        h("span", { class: "int-ago", text: timeAgo(at) }),
+      );
+      if (url) {
+        row.style.cursor = "pointer";
+        row.addEventListener("click", () => void Bridge.openUrl(url));
+      }
+      rows.append(row);
+    });
+    const open = Number(d.openPrs ?? 0);
+    return h("div", { class: "int-card" }, header("#F4505E", "GitHub", open ? `${open} open PRs` : "Pull requests & CI"), rows);
+  }
+
   return h(
     "div",
     { class: "int-card" },
