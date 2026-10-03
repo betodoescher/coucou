@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import {
   addTodo, compareTodos, dayChoices, dueCount, editTodo, upNext, dueLabel, parseQuickAdd, removeList, toggleTodo, visibleTodos,
-  nextReminder, nextWake, reminderDue, ringsAt,
+  nextReminder, nextWake, reminderDue, ringsAt, addNote, editNote, sortedNotes, agoLabel,
   EMPTY_DOC, type TodoItem,
 } from "../src/core/todos.ts";
 
@@ -116,6 +116,22 @@ assert.deepEqual(
   [...timedDoc.items, { ...base, id: "untimed", due: "2026-10-02" }].filter((i) => !i.done).sort(compareTodos).map((i) => i.id),
   ["call", "untimed", "friday"], "same day: timed first",
 );
+
+let notes = addNote(EMPTY_DOC, "  Gate code 4512 ", now)!;
+assert.equal(addNote(notes, "   ", now), null);
+notes = addNote(notes, "Call back Ana", new Date(now.getTime() + 60_000))!;
+assert.deepEqual(sortedNotes(notes).map((n) => n.text), ["Call back Ana", "Gate code 4512"], "newest first");
+const gate = sortedNotes(notes)[1];
+notes = editNote(notes, gate.id, "Gate code 4513", new Date(now.getTime() + 120_000));
+assert.equal(sortedNotes(notes)[0].text, "Gate code 4513", "an edit brings it to the top");
+assert.equal(sortedNotes(editNote(notes, gate.id, "Gate code 4513", new Date(0)))[0].updatedAt, now.getTime() + 120_000,
+  "unchanged text keeps its time");
+assert.equal(editNote(notes, gate.id, "  ", now).notes!.length, 1, "cleared means deleted");
+assert.equal(sortedNotes({ version: 1, lists: [], items: [] }).length, 0, "lists saved before notes");
+assert.equal(agoLabel(now.getTime() - 30_000, now), "now");
+assert.equal(agoLabel(now.getTime() - 5 * 60_000, now), "5m");
+assert.equal(agoLabel(now.getTime() - 3 * 3_600_000, now), "3h");
+assert.equal(agoLabel(now.getTime() - 2 * 86_400_000, now), "2d");
 
 doc = removeList(doc, doc.lists[0].id);
 assert.equal(doc.lists.length, 0);

@@ -10,7 +10,7 @@ import { Bridge, type CursorStatus } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
-import { buildTodos } from "./todos";
+import { buildToday } from "./today";
 import { Todos } from "../core/todoStore";
 import {
   PRIORITY_COLORS, dayOf, dueCount, isOverdue, toggleTodo, upNext, whenLabel, type TodoItem,
@@ -90,7 +90,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
   const todoCount = h("span", { class: "tab-count" });
   const tabTodos = h(
     "button",
-    { class: "tab tab-todos", title: "Tasks", onclick: () => go("todos") },
+    { class: "tab tab-todos", title: "Today", onclick: () => go("todos") },
     svg(ICONS.checklist, 14, { stroke: 1.8 }),
     todoCount,
   );
@@ -279,6 +279,7 @@ function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewAc
   const due = dueCount(Todos.doc, today);
   const open = () => {
     actions.blip();
+    State.todayTab = "tasks";
     actions.setView("todos");
   };
   const frag = document.createDocumentFragment();
@@ -621,7 +622,7 @@ export function buildViews(
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
-  map.set("todos", buildTodos(onChatHeightChange));
+  map.set("todos", buildToday(onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

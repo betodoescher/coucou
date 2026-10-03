@@ -17,7 +17,7 @@ import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from ".
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
-import { todoRowCount } from "../views/todos";
+import { todayRowCount } from "../views/today";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
 
@@ -114,8 +114,12 @@ export class Island {
       collapse: () => this.collapse(),
       setFocus: (id) => {
         Sound.play("blip");
-        if (id === TODO_PILL_ID) this.setView("todos");
-        else State.setFocus(id);
+        if (id === TODO_PILL_ID) {
+          State.todayTab = "tasks";
+          this.setView("todos");
+        } else {
+          State.setFocus(id);
+        }
       },
       openTerminal: () => {
         const cwd = State.focusTask?.sessionCwd ?? null;
@@ -458,7 +462,7 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const count = State.view === "todos" ? todoRowCount() : State.chatHistory.length;
+    const count = State.view === "todos" ? todayRowCount() : State.chatHistory.length;
     const { w, h } = islandSize(State.mode, State.view, count);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };

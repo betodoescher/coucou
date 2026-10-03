@@ -13,6 +13,8 @@ const MAX_ITEMS: usize = 5000;
 const MAX_LISTS: usize = 50;
 const MAX_TITLE: usize = 500;
 const MAX_NAME: usize = 60;
+const MAX_NOTES: usize = 1000;
+const MAX_NOTE: usize = 5000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,15 +44,27 @@ pub struct TodoItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub text: String,
+    pub created_at: f64,
+    pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TodoDoc {
     pub version: u32,
     pub lists: Vec<TodoList>,
     pub items: Vec<TodoItem>,
+    /// Quick notes of the Today tab; absent in files saved before them.
+    #[serde(default)]
+    pub notes: Vec<Note>,
 }
 
 impl Default for TodoDoc {
     fn default() -> Self {
-        Self { version: 1, lists: Vec::new(), items: Vec::new() }
+        Self { version: 1, lists: Vec::new(), items: Vec::new(), notes: Vec::new() }
     }
 }
 
@@ -131,6 +145,12 @@ fn validate(doc: &TodoDoc) -> Result<(), String> {
             }
         }
     }
+    if doc.notes.len() > MAX_NOTES {
+        return Err(format!("Too many notes (max {MAX_NOTES})."));
+    }
+    if doc.notes.iter().any(|n| n.text.trim().is_empty() || n.text.chars().count() > MAX_NOTE) {
+        return Err(format!("A note must be 1 to {MAX_NOTE} characters."));
+    }
     Ok(())
 }
 
@@ -184,11 +204,20 @@ mod tests {
             version: 1,
             lists: vec![TodoList { id: "w".into(), name: "Work".into(), color: "#3b82f6".into() }],
             items: vec![item("Send the report")],
+            notes: vec![Note { id: "n".into(), text: "Gate code 4512".into(), created_at: 1.0, updated_at: 2.0 }],
         };
         save_to(&file, &doc).unwrap();
         assert_eq!(load_from(&file), doc);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp file left behind");
         assert_eq!(load_from(&dir.join("missing.json")), TodoDoc::default());
+    }
+
+    #[test]
+    fn a_file_from_before_notes_still_loads() {
+        let dir = temp_dir("old");
+        let file = dir.join("todos.json");
+        std::fs::write(&file, br#"{"version":1,"lists":[],"items":[]}"#).unwrap();
+        assert_eq!(load_from(&file), TodoDoc::default());
     }
 
     #[test]
@@ -228,6 +257,10 @@ mod tests {
         timed.time = Some("15:30".into());
         timed.due = None;
         assert!(validate(&TodoDoc { items: vec![timed], ..TodoDoc::default() }).is_err(), "a time needs a day");
+
+        let note = |text: &str| Note { id: "n".into(), text: text.into(), created_at: 1.0, updated_at: 1.0 };
+        assert!(validate(&TodoDoc { notes: vec![note("  ")], ..TodoDoc::default() }).is_err());
+        assert!(validate(&TodoDoc { notes: vec![note(&"x".repeat(MAX_NOTE + 1))], ..TodoDoc::default() }).is_err());
 
         let mut bad_priority = item("x");
         bad_priority.priority = 4;

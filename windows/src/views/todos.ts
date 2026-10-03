@@ -8,14 +8,7 @@ import {
   PRIORITY_COLORS, addTodo, dayChoices, dayOf, dueCount, dueLabel, editTodo, isOverdue,
   removeTodo, toggleTodo, visibleTodos, whenLabel, type Priority, type TodoFields, type TodoFilter, type TodoItem,
 } from "../core/todos";
-import type { ViewHost } from "./views";
-
-let shownRows = 0;
-
-/** Rows the view shows, for the island's height. */
-export function todoRowCount(): number {
-  return shownRows;
-}
+import type { TodayPanel } from "./today";
 
 const PRIORITY_LABELS: [Priority, string][] = [[0, "No priority"], [1, "Low"], [2, "Medium"], [3, "High"]];
 
@@ -90,7 +83,8 @@ function fieldPickers(initial: Omit<TodoFields, "title">) {
   };
 }
 
-export function buildTodos(onHeightChange: () => void): ViewHost {
+export function buildTodos(onHeightChange: () => void): TodayPanel {
+  let shownRows = 0;
   let filter: TodoFilter = "all";
   let editing: string | null = null;
   let rowsKey = "";
@@ -109,12 +103,9 @@ export function buildTodos(onHeightChange: () => void): ViewHost {
   const bar = h("div", { class: "chat-bar todo-bar" }, input, pickersSlot, addBtn);
   const error = h("div", { class: "todo-error" });
   const list = h("div", { class: "todo-list" });
+  const segSlot = h("div", { class: "today-seg-slot" });
 
-  const el = h(
-    "div",
-    { class: "view" },
-    h("div", { class: "card todo-card" }, h("div", { class: "todo-body" }, chips, bar, error, list)),
-  );
+  const el = h("div", { class: "todo-body" }, h("div", { class: "todo-top" }, segSlot, chips), bar, error, list);
 
   /** What a new task gets from the filter in use. */
   const filterDefaults = (): Omit<TodoFields, "title"> => ({
@@ -324,7 +315,9 @@ export function buildTodos(onHeightChange: () => void): ViewHost {
 
   return {
     el,
+    segSlot,
     sync,
+    rows: () => shownRows,
     focus() {
       input.focus();
     },
