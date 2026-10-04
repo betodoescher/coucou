@@ -25,11 +25,9 @@ on:
 permissions:
   contents: read
 
-# Off until a first build has been checked by hand: run this workflow manually,
-# download the Coucou-Linux artifact, try it, then set this to 'true' and push a
-# linux-v* tag.
+# Set to 'false' to keep linux-v* tags from publishing a release.
 env:
-  PUBLISH: 'false'
+  PUBLISH: 'true'
 
 jobs:
   build:
@@ -141,7 +139,8 @@ jobs:
       contents: write
 
     steps:
-      # Only for the linux-latest tag below; nothing from the repo is run.
+      # For the release notes and the linux-latest tag below; nothing from the
+      # repo is run.
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
@@ -155,16 +154,25 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           v="$VERSION"
-          notes="Coucou for Linux $v — Mochi at the top of your screen.
+          cat > notes.md <<EOF
+          # 🐧 Coucou for Linux $v
 
-          - **AppImage** (any distribution): \`chmod +x Coucou-Linux-$v-x86_64.AppImage\` and run it.
-          - **Debian / Ubuntu**: \`sudo apt install ./Coucou-Linux-$v-amd64.deb\`
-          - **Fedora / openSUSE**: \`sudo dnf install ./Coucou-Linux-$v-x86_64.rpm\`
+          **Mochi at the top of your screen**, now with Cursor, Kiro, your plans' usage, and your whole day in the island.
+
+          ## 📦 Install
+
+          | Package | Distribution | How |
+          |---|---|---|
+          | \`Coucou-Linux-$v-amd64.deb\` | Debian, Ubuntu, Mint, Pop!_OS | \`sudo apt install ./Coucou-Linux-$v-amd64.deb\` |
+          | \`Coucou-Linux-$v-x86_64.rpm\` | Fedora, openSUSE | \`sudo dnf install ./Coucou-Linux-$v-x86_64.rpm\` |
+          | \`Coucou-Linux-$v-x86_64.AppImage\` | Any distribution | \`chmod +x Coucou-Linux-$v-x86_64.AppImage\` and run it |
 
           Check a download with \`sha256sum -c SHA256SUMS --ignore-missing\`.
 
-          The island sits on the top edge on compositors with layer-shell (COSMIC,
-          KDE Plasma, Hyprland, Sway…). On GNOME it opens as a regular window."
+          The island sits on the top edge on compositors with layer-shell (COSMIC, KDE Plasma, Hyprland, Sway…), and at the top of the screen on GNOME too.
+
+          EOF
+          cat windows/RELEASE_NOTES.md >> notes.md
           # --latest=false: the macOS \`v*\` releases own the Latest slot, which
           # the site's Download for Mac button points at.
           gh release create "$GITHUB_REF_NAME" \
@@ -172,8 +180,8 @@ jobs:
             "release/Coucou-Linux-$v-amd64.deb" \
             "release/Coucou-Linux-$v-x86_64.rpm" \
             "release/SHA256SUMS" \
-            --title "Coucou for Linux $v" \
-            --notes "$notes" \
+            --title "🐧 Coucou for Linux $v" \
+            --notes-file notes.md \
             --latest=false
 
       - name: Update the rolling linux-latest release

@@ -44,6 +44,12 @@ Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch
 - 🎭 **A real character** — idle breathing, blinks, eyes on a sphere that follow your mouse, emotes, 28 handcrafted sounds, a greeting on launch.
 - 🫥 **Invisible when idle** — hides away when nothing is running, peeks out when you hover the notch (the top edge of the screen on Windows and Linux).
 - 🖥️ **Any Mac, notch or not** — on an iMac, a Mac mini, or a MacBook with its lid closed on an external display, Mochi sits in a small bar at the top of the screen.
+- 🛡️ **Cursor and Kiro, approved from the island** *(Windows, Linux)* — their sessions show up live like Claude Code's, and their shell commands wait for your **Allow / Deny**.
+- 🪪 **Chat on the plans you already pay for** *(Windows, Linux)* — answer through your Cursor or Kiro plan via their CLIs, next to the Claude API, with automatic fallback when one runs out of credits.
+- 🏠 **A home card for your day** *(Windows, Linux)* — weather for your city (Open-Meteo, no key), your next task, today's habits, running agents, and your AI usage as `/usage` shows it: `Cursor 70% · Kiro 1.9% · Claude 1.2M` *(Cursor usage: Linux)*.
+- ✅ **Today: tasks, notes and habits** *(Windows, Linux)* — tasks with a day, priority, list and reminder time, quick notes beside them, and daily habits with streaks.
+- 🐙 **GitHub on watch** *(Windows, Linux)* — open PRs across your orgs and failed Actions; the island opens on CI failures and review requests.
+- 🪟 **The island, your way** *(Windows, Linux)* — drag it anywhere and it stays there, shrink it with one click, and choose whether the compact island hides after a minute.
 - 🔒 **Private by design** — no telemetry, no account. Keys live in your macOS Keychain, Windows Credential Manager or Linux Secret Service (GNOME Keyring, KWallet). The app only talks to the services you plug in.
 
 <table>
@@ -67,10 +73,10 @@ Meet **Mochi**: a soft little squircle with big eyes that pops out of your notch
 
 ### Windows
 
-The Windows installer is **temporarily unavailable**. Microsoft Defender wrongly
-flags the unsigned installer as malware; a false-positive report is under review
-at Microsoft and the installer will come back once it is cleared and signed.
-Until then you can [build it from source](#build-from-source).
+Download `Coucou-Windows-*-setup.exe` from this fork's [Releases](https://github.com/betodoescher/coucou/releases) (`windows-v*` tags) and run it.
+The installer is not code-signed yet: SmartScreen asks you to confirm (**More info → Run anyway**),
+and Microsoft Defender may wrongly flag it as malware (a false-positive report is under review at
+Microsoft). If you'd rather not run it, [build it from source](#build-from-source).
 
 There is no notch on a PC, so the island slides out of the top edge of the screen
 instead of hiding inside one. See [`windows/README.md`](windows/README.md) for the
@@ -78,7 +84,7 @@ rest of the differences.
 
 ### Linux
 
-The first Linux build is out as a beta: download it from [Coucou for Linux 0.1.1 (beta)](https://github.com/Louis-CFM/coucou/releases/tag/linux-v0.1.1), x86_64 only for now. Later versions will be in [Releases](https://github.com/Louis-CFM/coucou/releases) under `linux-v*` tags.
+Download the latest build from this fork's [Releases](https://github.com/betodoescher/coucou/releases) (`linux-v*` tags), x86_64 only for now.
 
 - **AppImage** (any distribution): `chmod +x Coucou-Linux-*.AppImage`, then run it.
 - **Debian / Ubuntu**: `sudo apt install ./Coucou-Linux-*.deb`
@@ -138,6 +144,9 @@ Click the Coucou icon in the menu bar (macOS) or in the system tray (Windows, Li
 | **Google AI API key** *(macOS)* | chat with Google AI (Gemini) | Settings → Chat — other providers · Keychain |
 | **OpenAI API key** *(macOS)* | chat with OpenAI | Settings → Chat — other providers · Keychain |
 | **Active pills** *(macOS)* | choose which tools and agents appear in the island | Settings → Active pills |
+| **Cursor and Kiro hooks** *(Windows, Linux)* | Cursor and Kiro sessions and approvals | **Install hooks** in Settings — Cursor's `~/.cursor/hooks.json` is backed up and merged after showing the diff; Kiro gets `~/.kiro/hooks/coucou.json` |
+| **Cursor / Kiro chat** *(Windows, Linux)* | chat on your own plan | Settings → Chat — sign in once (**Sign in with Cursor**, or `kiro-cli login` for Kiro), then turn each provider on |
+| **Weather city** *(Windows, Linux)* | weather on the home card | Settings → General, e.g. "Florianópolis SC" — empty turns it off |
 | Stripe, n8n, GitHub, Vercel, Resend, Notion, Cal.com | the service pills | Keychain / Windows Credential Manager / Secret Service, all optional |
 
 If Coucou isn't running, the hook exits immediately: **Claude Code is never blocked.**
