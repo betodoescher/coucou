@@ -53,10 +53,10 @@ const HOOK_TEXT: Record<HookTarget, {
   claude: {
     title: "Claude Code",
     file: "settings.json",
-    on: "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there.",
-    off: "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+    on: "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there. Your plan's 5-hour and weekly limits (Pro and Max) show on the home card.",
+    off: "Install the hooks to see your Claude Code sessions in the island, approve permissions without leaving what you are doing, and keep an eye on your plan's limits.",
     done: "Open a new Claude Code session to pick the hooks up.",
-    keep: "This is exactly what will change in your settings.json. Your own hooks are left untouched.",
+    keep: "This is exactly what will change in your settings.json. Your own hooks are left untouched, and your own status line keeps showing as before.",
   },
   cursor: {
     title: "Cursor sessions",
@@ -113,7 +113,9 @@ function hookSection(status: HookStatus, target: HookTarget = "claude"): HTMLEle
     if (status.outdated) {
       body.append(h("div", {
         class: "notice warn",
-        text: "This version listens to more events. Reinstall the hooks to see file edits, the agent's final answer and Claude's questions in the island.",
+        text: target === "claude"
+          ? "This version listens to more events. Reinstall the hooks to see file edits, the agent's final answer, Claude's questions and your plan's limits in the island."
+          : "This version listens to more events. Reinstall the hooks to see file edits and the agent's final answer in the island.",
       }));
     }
 

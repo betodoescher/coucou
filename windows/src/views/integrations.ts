@@ -453,7 +453,29 @@ function homeSummary() {
     waiting: agents.filter((t) => t.state === "approval" || t.pillBadge === "approval").length,
     weather: State.integrations.weather ?? null,
     usage: State.usage,
+    plan: claudePlan(now),
   };
+}
+
+type PlanRow = { label: string; pct: number; resets: string };
+
+/** Claude's limits as of `now`: a window whose reset has passed is back to 0. */
+function claudePlan(now: Date): PlanRow[] {
+  const plan = State.usage?.claudePlan;
+  if (!plan) return [];
+  const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const rows: PlanRow[] = [];
+  for (const [label, w, weekly] of [["5 hours", plan.fiveHour, false], ["week", plan.sevenDay, true]] as const) {
+    if (!w) continue;
+    const at = new Date(w.resetsAt * 1000);
+    const live = at > now;
+    rows.push({
+      label,
+      pct: live ? w.usedPct : 0,
+      resets: live ? (weekly ? `${at.toLocaleDateString("en-US", { weekday: "short" })} ${time(at)}` : time(at)) : "",
+    });
+  }
+  return rows;
 }
 
 function tokens(n: number): string {
@@ -465,8 +487,9 @@ function tokens(n: number): string {
 const pct = (n: number) => `${n < 10 ? n.toFixed(1).replace(/\.0$/, "") : Math.round(n)}%`;
 const title = (s: string) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
-/** Line: "Cursor 70% · Kiro 1.9% · Claude 1.2M"; tooltip: the `/usage` details. */
-function usageText(u: NonNullable<typeof State.usage>): [string, string] {
+/** Line: "Cursor 70% · Kiro 1.9% · Claude 42%" (or Claude's tokens when its
+ *  limits are unknown); tooltip: the details. */
+function usageText(u: NonNullable<typeof State.usage>, plan: PlanRow[]): [string, string] {
   const bits: string[] = [];
   const tips: string[] = [];
   if (u.cursor) {
@@ -480,10 +503,13 @@ function usageText(u: NonNullable<typeof State.usage>): [string, string] {
     bits.push(`Kiro ${pct(k.limit ? (k.used / k.limit) * 100 : 0)}`);
     tips.push(`${title(k.plan)}: ${k.used} of ${k.limit} credits, resets ${k.resets}`);
   }
-  if (u.claudeTokens) {
+  if (plan.length) {
+    bits.push(`Claude ${pct(Math.max(...plan.map((r) => r.pct)))}`);
+    tips.push(`Claude plan: ${plan.map((r) => `${pct(r.pct)} of ${r.label}${r.resets ? ` (resets ${r.resets})` : ""}`).join(", ")}`);
+  } else if (u.claudeTokens) {
     bits.push(`Claude ${tokens(u.claudeTokens)}`);
-    tips.push(`Claude Code: ${u.claudeTokens.toLocaleString()} tokens today`);
   }
+  if (u.claudeTokens) tips.push(`Claude Code: ${u.claudeTokens.toLocaleString()} tokens today`);
   return [bits.join(" · "), tips.join("\n")];
 }
 
@@ -534,7 +560,7 @@ function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
     h("span", { class: "int-name", text: bits.join(" · ") }),
   );
 
-  const [used, tip] = s.usage ? usageText(s.usage) : ["", ""];
+  const [used, tip] = s.usage ? usageText(s.usage, s.plan) : ["", ""];
   const usageLine = used
     ? h("div", { class: "int-status", title: tip }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
     : null;

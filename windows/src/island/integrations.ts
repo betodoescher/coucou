@@ -2,7 +2,7 @@
 // pollers: a genuinely new item flips the pill to finished/error, badges it when
 // the pill isn't focused, plays a sound, and clears itself after 60 s.
 
-import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
+import { onEvent, Bridge, type ClaudePlan, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
@@ -22,6 +22,7 @@ const clearTimers = new Map<string, number>();
 
 export function registerIntegrationHandlers(island: Island) {
   void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
+  void onEvent<ClaudePlan>("claude-plan", setClaudePlan);
   void refreshConfigured();
 }
 
@@ -48,7 +49,11 @@ export async function refreshUsage(force = false) {
     plansReadAt = now;
     void Bridge.planUsage().then((plans) => {
       if (!plans) return;
-      State.usage = { claudeTokens: State.usage?.claudeTokens ?? 0, ...plans };
+      State.usage = {
+        claudeTokens: State.usage?.claudeTokens ?? 0,
+        claudePlan: State.usage?.claudePlan ?? null,
+        ...plans,
+      };
       State.notify();
     });
   }
@@ -61,6 +66,18 @@ export async function refreshUsage(force = false) {
     cursor: State.usage?.cursor ?? null,
     kiro: State.usage?.kiro ?? null,
     claudeTokens: read?.claudeTokens ?? 0,
+    claudePlan: read?.claudePlan ?? State.usage?.claudePlan ?? null,
+  };
+  State.notify();
+}
+
+/** Claude Code just handed its status line new limits. */
+function setClaudePlan(plan: ClaudePlan) {
+  State.usage = {
+    claudeTokens: State.usage?.claudeTokens ?? 0,
+    cursor: State.usage?.cursor ?? null,
+    kiro: State.usage?.kiro ?? null,
+    claudePlan: plan,
   };
   State.notify();
 }

@@ -38,6 +38,20 @@ export interface KiroPlan {
   resets: string;
 }
 
+/** Claude plan limits from Claude Code's status line. */
+export interface PlanWindow {
+  usedPct: number;
+  /** Unix seconds. */
+  resetsAt: number;
+}
+
+export interface ClaudePlan {
+  fiveHour: PlanWindow | null;
+  sevenDay: PlanWindow | null;
+  /** Unix milliseconds. */
+  updatedAt: number;
+}
+
 export interface BootInfo {
   settings: Settings;
   /** Logical screen rect of the monitor the island lives on. */
@@ -139,7 +153,8 @@ export const Bridge = {
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
   /** Claude tokens since `sinceMs`, from its local logs. */
-  usageToday: (sinceMs: number) => call<{ claudeTokens: number }>("usage_today", { sinceMs }),
+  usageToday: (sinceMs: number) =>
+    call<{ claudeTokens: number; claudePlan: ClaudePlan | null }>("usage_today", { sinceMs }),
   /** Cursor and Kiro plan usage from their CLIs' `/usage`; takes ~15 s. */
   planUsage: () => call<{ cursor: CursorPlan | null; kiro: KiroPlan | null }>("plan_usage"),
   /** Opens the configured n8n instance in the browser. */
