@@ -20,7 +20,7 @@ use gtk::glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use tauri::{AppHandle, WebviewWindow};
 
-use super::{home_dir, LocalTime};
+use super::{home_dir, LocalTime, Proc};
 
 /// File name of the Claude Code relay.
 pub const HOOK_EXE: &str = "coucou-hook";
@@ -163,6 +163,91 @@ pub fn find_on_path(stem: &str) -> Option<PathBuf> {
                 .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 .unwrap_or(false)
         })
+}
+
+/// `pid` and its parents, up to init, read from /proc.
+pub fn ancestors(pid: u32) -> Vec<Proc> {
+    let mut out = Vec::new();
+    let mut pid = pid;
+    while pid > 0 && out.len() < 32 {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
+        // `pid (comm) state ppid …` — comm may itself contain spaces and parentheses.
+        let (Some(open), Some(close)) = (stat.find('('), stat.rfind(')')) else { break };
+        let comm = &stat[open + 1..close];
+        let ppid = stat[close + 1..]
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let name = std::fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().trim_end_matches(" (deleted)").to_string()))
+            .unwrap_or_else(|| comm.to_string());
+        out.push(Proc { pid, name: name.to_lowercase() });
+        pid = ppid;
+    }
+    out
+}
+
+/// Variables Coucou or its AppImage set for itself, which another app must not
+/// inherit.
+const OWN_ENV: &[&str] = &[
+    "APPDIR", "APPIMAGE", "ARGV0", "OWD", "GDK_BACKEND", "GDK_PIXBUF_MODULE_FILE", "GIO_MODULE_DIR",
+    "GSETTINGS_SCHEMA_DIR", "GST_PLUGIN_PATH", "GST_PLUGIN_SCANNER", "GST_PLUGIN_SYSTEM_PATH",
+    "GST_PLUGIN_SYSTEM_PATH_1_0", "GST_REGISTRY", "GTK_DATA_PREFIX", "GTK_EXE_PREFIX", "GTK_PATH",
+    "LD_LIBRARY_PATH", "LD_PRELOAD", "PERLLIB", "PYTHONHOME", "PYTHONPATH", "QT_PLUGIN_PATH",
+];
+
+/// Wayland lets no app raise another's window. What works is what a launcher
+/// does: start the app again. Electron apps hold a single-instance lock, so the
+/// new process only asks the running one to show its window, then exits.
+/// Anything else would open a second instance, so it is left alone.
+pub fn bring_to_front(pid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ours = std::fs::metadata(format!("/proc/{pid}"))
+        .is_ok_and(|m| m.uid() == unsafe { libc::getuid() });
+    let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else { return false };
+    let Some(dir) = exe.parent() else { return false };
+    if !ours || !exe.is_file() || !is_electron(dir) {
+        return false;
+    }
+    // Inside an AppImage, AppRun is the entry point that sets its environment up.
+    let in_appimage = dir.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".mount_"));
+    let program = match dir.join("AppRun") {
+        run if in_appimage && run.is_file() => run,
+        _ => exe.clone(),
+    };
+    // Only the flags it was started with: a path among them would be opened.
+    let args: Vec<String> = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .unwrap_or_default()
+        .split(|b| *b == 0)
+        .skip(1)
+        .map(|a| String::from_utf8_lossy(a).to_string())
+        .filter(|a| a.starts_with("--"))
+        .collect();
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(home_dir())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for var in OWN_ENV {
+        cmd.env_remove(var);
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn is_electron(dir: &Path) -> bool {
+    dir.join("resources").is_dir()
+        && (dir.join("chrome-sandbox").exists()
+            || dir.join("chrome_crashpad_handler").exists()
+            || dir.join("resources").join("app.asar").exists())
 }
 
 // ── Cursor ────────────────────────────────────────────────────────────────────

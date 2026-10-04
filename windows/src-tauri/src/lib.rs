@@ -12,6 +12,7 @@ mod log;
 mod pipe;
 mod platform;
 mod secrets;
+mod session_host;
 mod settings;
 mod todos;
 mod tray;
@@ -223,10 +224,14 @@ fn open_url(url: String) {
     platform::open_url(&url);
 }
 
-/// "Open terminal" opens the working folder in VS Code when `code` is on PATH,
-/// and falls back to the file manager otherwise.
+/// "Open terminal" brings back the app the session runs in (`host`, found by
+/// session_host). Failing that, it opens the working folder in VS Code when
+/// `code` is on PATH, and in the file manager otherwise.
 #[tauri::command]
-fn open_in_vscode(path: Option<String>) -> bool {
+fn open_session(host: Option<u32>, path: Option<String>) -> bool {
+    if host.is_some_and(session_host::bring_back) {
+        return true;
+    }
     // No shell anywhere near this. The path is a project folder chosen by
     // whoever is using Claude Code, and a shell would happily read `&`, `^`, `%`
     // or `$` in a folder name as syntax. Finding the launcher ourselves and
@@ -587,7 +592,7 @@ pub fn run() {
             save_island_position,
             reset_island_position,
             open_url,
-            open_in_vscode,
+            open_session,
             quit_app,
             hooks_status,
             hooks_preview,

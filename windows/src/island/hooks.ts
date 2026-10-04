@@ -40,6 +40,8 @@ interface HookPayload {
   failure_type?: string;
   /** Claude Code's PostToolUseFailure: the user interrupted the tool. */
   is_interrupt?: boolean;
+  /** Added by Coucou: the app the session runs in. */
+  host_pid?: number;
 }
 
 function failureStep(payload: HookPayload): string {
@@ -250,6 +252,7 @@ function handleHook(island: Island, payload: HookPayload) {
     State.upsertExternalAgent(agentId, label, color);
     const t = State.tasks.find((x) => x.id === agentId);
     if (t && cwd) t.sessionCwd = cwd;
+    if (t && payload.host_pid) t.sessionHost = payload.host_pid;
   };
 
   /** Open the island on this agent, whatever had the focus. */

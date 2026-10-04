@@ -93,8 +93,9 @@ pub fn start(app: AppHandle) {
                 }
             };
             let connected = std::mem::replace(&mut server, next);
+            let relay = crate::platform::pipe_client_pid(&connected);
             let app = app.clone();
-            tauri::async_runtime::spawn(async move { handle(app, connected).await });
+            tauri::async_runtime::spawn(async move { handle(app, connected, relay).await });
         }
     });
 }
@@ -138,12 +139,14 @@ pub fn start(app: AppHandle) {
                 }
             };
             // Only the relay run by our own user may drive the island.
-            if !matches!(stream.peer_cred(), Ok(c) if c.uid() == uid) {
+            let cred = stream.peer_cred();
+            if !matches!(cred, Ok(c) if c.uid() == uid) {
                 log::line("refused a relay connection from another user");
                 continue;
             }
+            let relay = cred.ok().and_then(|c| c.pid()).and_then(|p| u32::try_from(p).ok());
             let app = app.clone();
-            tauri::async_runtime::spawn(async move { handle(app, stream).await });
+            tauri::async_runtime::spawn(async move { handle(app, stream, relay).await });
         }
     });
 }
@@ -165,7 +168,8 @@ impl Relay for NamedPipeServer {
 #[cfg(target_os = "linux")]
 impl Relay for tokio::net::UnixStream {}
 
-async fn handle(app: AppHandle, mut pipe: impl Relay) {
+/// `relay`: the coucou-hook process, when the OS tells us who connected.
+async fn handle(app: AppHandle, mut pipe: impl Relay, relay: Option<u32>) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -216,6 +220,10 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
     if crate::hooks::is_own_workdir(payload.get("cwd").and_then(Value::as_str).unwrap_or_default()) {
         pipe.finish();
         return;
+    }
+
+    if let Some(host) = relay.and_then(crate::session_host::remember) {
+        payload["host_pid"] = json!(host);
     }
 
     if event != "PermissionRequest" && event != "AskUserQuestion" {
