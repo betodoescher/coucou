@@ -41,6 +41,8 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Process of the app the session runs in, for "Open terminal". */
+  sessionHost?: number | null;
   /** Recent file edits, referenced by the ticker's edit steps. */
   edits?: EditInfo[];
   /** The current step is the agent's final message: shown still, no shimmer. */

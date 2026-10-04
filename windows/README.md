@@ -142,9 +142,11 @@ problems. It stays on your machine.
   the top edge instead of hiding in a notch.
 - Permission approval works from **any** terminal; the Mac build only listens to
   VS Code sessions.
-- Not in this version: sending a file by email, dragging Mochi onto a window to
-  attach it as context, and jumping to a specific terminal window — "Open
-  terminal" opens the working folder in VS Code when `code` is on your `PATH`.
+- "Open terminal" brings back the window of the app the session runs in
+  (Windows Terminal, VS Code, Cursor…). When that app can't be found, it opens
+  the working folder in VS Code if `code` is on your `PATH`.
+- Not in this version: sending a file by email and dragging Mochi onto a window
+  to attach it as context.
 - Cal.com shows the next bookings as a list rather than the Mac's calendar.
 
 ## Linux
@@ -212,5 +214,8 @@ What changes on Linux:
 - **Files**: preferences in `~/.config/coucou/`, the log at
   `~/.local/share/coucou/coucou.log`.
 - What the Windows build leaves out, this one does too: sending a file by
-  email, dragging Mochi onto a window, and jumping to a specific terminal
-  window — "Open terminal" opens the folder in VS Code.
+  email and dragging Mochi onto a window.
+- "Open terminal" can only bring back Electron apps (VS Code, Cursor, Orca…):
+  Wayland lets no app raise another's window, so Coucou starts the app again
+  and its single-instance lock hands the request to the running window. A
+  session in another terminal falls back to opening the folder in VS Code.

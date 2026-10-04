@@ -25,6 +25,13 @@ pub struct LocalTime {
     pub second: u32,
 }
 
+/// One process on the way from coucou-hook up to the app showing the session.
+/// `name` is the executable's file name, lowercase, without `.exe`.
+pub struct Proc {
+    pub pid: u32,
+    pub name: String,
+}
+
 /// The user's home directory, where `.claude/settings.json` lives.
 pub fn home_dir() -> PathBuf {
     std::env::var_os(HOME_VAR)

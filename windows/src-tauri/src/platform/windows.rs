@@ -1,5 +1,6 @@
 // Windows: Win32 for the island window and the cursor, %APPDATA% for files.
 
+use std::collections::HashMap;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,16 +11,25 @@ use ::windows::core::{BOOL, PWSTR};
 use ::windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, HWND, LPARAM, LocalFree, POINT};
 use ::windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use ::windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+use ::windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
 use ::windows::Win32::System::Ole::RevokeDragDrop;
+use ::windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use ::windows::Win32::System::SystemInformation::GetLocalTime;
 use ::windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use ::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+use ::windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, VK_LBUTTON, VK_MENU,
+};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetClassNameW, GetCursorPos, GetWindowLongPtrW, SetWindowLongPtrW,
-    GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetCursorPos, GetWindow, GetWindowLongPtrW,
+    GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+    SetWindowLongPtrW, ShowWindow, GWL_EXSTYLE, GW_OWNER, SW_RESTORE, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW,
 };
 
-use super::LocalTime;
+use super::{LocalTime, Proc};
 use crate::island::WINDOW_LABEL;
 
 /// File name of the Claude Code relay.
@@ -100,6 +110,94 @@ pub fn find_on_path(stem: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// `pid` and its parents, from one snapshot of the process table.
+pub fn ancestors(pid: u32) -> Vec<Proc> {
+    let mut table: HashMap<u32, (u32, String)> = HashMap::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let len = entry.szExeFile.iter().position(|c| *c == 0).unwrap_or(entry.szExeFile.len());
+                let file = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
+                let name = file.strip_suffix(".exe").unwrap_or(&file).to_string();
+                table.insert(entry.th32ProcessID, (entry.th32ParentProcessID, name));
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    let mut out: Vec<Proc> = Vec::new();
+    let mut pid = pid;
+    // A parent that exited can leave its pid to an unrelated process: the
+    // length cap and the cycle check keep a bogus chain finite.
+    while let Some((parent, name)) = table.get(&pid) {
+        if out.len() >= 32 || out.iter().any(|p| p.pid == pid) {
+            break;
+        }
+        out.push(Proc { pid, name: name.clone() });
+        pid = *parent;
+    }
+    out
+}
+
+/// The process on the other end of a relay connection.
+pub fn pipe_client_pid(pipe: &tokio::net::windows::named_pipe::NamedPipeServer) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+    let mut pid = 0u32;
+    unsafe { GetNamedPipeClientProcessId(HANDLE(pipe.as_raw_handle()), &mut pid).ok()? };
+    (pid != 0).then_some(pid)
+}
+
+struct FindWindow {
+    pid: u32,
+    found: Option<HWND>,
+}
+
+unsafe extern "system" fn main_window_of(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let find = unsafe { &mut *(lparam.0 as *mut FindWindow) };
+    let mut owner = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut owner)) };
+    let unowned = unsafe { GetWindow(hwnd, GW_OWNER) }.map_or(true, |h| h.0.is_null());
+    if owner == find.pid
+        && unowned
+        && unsafe { IsWindowVisible(hwnd) }.as_bool()
+        && unsafe { GetWindowTextLengthW(hwnd) } > 0
+    {
+        find.found = Some(hwnd);
+        return false.into();
+    }
+    true.into()
+}
+
+/// Raises the main window of `pid`, restoring it if minimised.
+pub fn bring_to_front(pid: u32) -> bool {
+    let mut find = FindWindow { pid, found: None };
+    unsafe {
+        let _ = EnumWindows(Some(main_window_of), LPARAM(&mut find as *mut FindWindow as isize));
+        let Some(hwnd) = find.found else { return false };
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+        // Only the foreground app may hand the foreground over, and the island
+        // never takes it. A synthetic Alt tap is what lifts that lock.
+        let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT { wVk: VK_MENU, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+            },
+        };
+        let tap = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+        SendInput(&tap, std::mem::size_of::<INPUT>() as i32);
+        SetForegroundWindow(hwnd).as_bool()
+    }
 }
 
 // ── Who we are ────────────────────────────────────────────────────────────────
