@@ -175,6 +175,8 @@ export type HookTarget = "claude" | "cursor" | "kiro";
 
 export interface HookStatus {
   installed: boolean;
+  /** Installed, but missing an event this version listens to. */
+  outdated: boolean;
   settingsPath: string;
   hookPath: string;
   hookReady: boolean;

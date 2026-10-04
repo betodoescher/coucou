@@ -40,6 +40,22 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Recent file edits, referenced by the ticker's edit steps. */
+  edits?: EditInfo[];
+  /** The current step is the agent's final message: shown still, no shimmer. */
+  finalShown?: boolean;
+  /** Cursor sends its answer before `stop`; kept here until then. */
+  lastReply?: string;
+}
+
+/** One file edit as coucou-hook summarised it. */
+export interface EditInfo {
+  id: string;
+  path: string;
+  added: number;
+  removed: number;
+  /** Changed lines, prefixed "+", "-" or " "; "…" between hunks. */
+  lines: string[];
 }
 
 export interface ApprovalInfo {

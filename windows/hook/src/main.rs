@@ -35,6 +35,8 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "tool_output", "transcript_pa
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+mod diff;
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
@@ -185,6 +187,7 @@ fn read_event() -> Option<(String, String, String)> {
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
+    diff::attach(&agent, &event, map);
     let event = normalize(&agent, &event, map);
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
 
