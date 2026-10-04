@@ -3,7 +3,7 @@
 // `npm run dev` alone.
 
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 import type { TodoDoc } from "./todos";
@@ -62,6 +62,8 @@ export interface BootInfo {
   cursorPoll: boolean;
   /** False where the compositor pins the island to the top edge (layer-shell). */
   islandMovable: boolean;
+  /** Mochi can be dragged out onto the desktop. */
+  desktopMochi: boolean;
 }
 
 export const Bridge = {
@@ -162,7 +164,27 @@ export const Bridge = {
 
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
+
+  // ── Mochi on the desktop ──────────────────────────────────────────────────
+  /** Mochi grabbed; `x`/`y` are the pointer's screen coordinates. */
+  desktopDragStart: (x: number, y: number) => call<void>("desktop_mochi_drag_start", { x, y }),
+  /** Only used where Rust cannot follow the cursor itself (Linux). */
+  desktopDrag: (x: number, y: number) => call<void>("desktop_mochi_drag", { x, y }),
+  desktopDrop: () => call<void>("desktop_mochi_drop"),
+  /** `out`: from the island to his spot; otherwise into the island for an alert. */
+  desktopFly: (out: boolean) => call<void>("desktop_mochi_fly", { out }),
+  /** Tells the desktop Mochi's page something (state, emote). */
+  toDesktop: (event: string, payload: unknown) => {
+    if (IS_TAURI) void emitTo("mochi", event, payload).catch(() => {});
+  },
 };
+
+/** What desktop.rs reports whenever the desktop Mochi changes. */
+export interface DesktopEvent {
+  onDesktop: boolean;
+  visible: boolean;
+  landed: boolean;
+}
 
 export interface IntegrationUpdate {
   id: string;
