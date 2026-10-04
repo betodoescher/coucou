@@ -80,6 +80,19 @@ fn events(t: Target) -> &'static [(&'static str, u64)] {
 /// Marker that identifies a Coucou entry inside settings.json.
 const MARKER: &str = "coucou-hook";
 
+/// Set on the agent CLIs Coucou runs itself (chat, `/usage`): their hooks
+/// still fire, and coucou-hook stays silent rather than report them as sessions.
+pub const QUIET_ENV: &str = "COUCOU_QUIET";
+
+/// Coucou's own working folders for those CLIs, for agents that do not pass
+/// the environment on to their hooks.
+pub fn is_own_workdir(cwd: &str) -> bool {
+    let cwd = Path::new(cwd);
+    ["cursor-chat", "cursor-usage", "kiro-chat", "kiro-usage"]
+        .iter()
+        .any(|d| cwd.starts_with(settings::local_dir().join(d)))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {

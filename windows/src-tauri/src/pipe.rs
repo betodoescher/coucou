@@ -195,6 +195,13 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         .unwrap_or_default()
         .to_string();
 
+    // The chat's own CLI runs are not sessions. Closing without a word lets a
+    // waiting hook carry on as if Coucou were not there.
+    if crate::hooks::is_own_workdir(payload.get("cwd").and_then(Value::as_str).unwrap_or_default()) {
+        pipe.finish();
+        return;
+    }
+
     if event != "PermissionRequest" {
         log::line(format!("hook {event}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
