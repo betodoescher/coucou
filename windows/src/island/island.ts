@@ -4,6 +4,7 @@
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop, onEvent, type DesktopEvent } from "../core/bridge";
 import { alertAction } from "../desktop/logic";
+import { cyclePill, islandShortcut, type IslandShortcut, type ShortcutAction } from "../core/shortcuts";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -55,6 +56,7 @@ export class Island {
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
+  private actions!: ViewActions;
   private uploadCanvas!: UploadCanvas;
 
   private width = new Tracked(NOTCH_W);
@@ -228,6 +230,7 @@ export class Island {
         this.ensureRunning();
       },
     };
+    this.actions = actions;
 
     this.wakeStrip = h("div", { id: "wake-strip" });
     this.botGlow = h("div", { id: "bot-glow" });
@@ -671,6 +674,22 @@ export class Island {
       this.drag = null;
     });
 
+    // Capture: the chat field stops its keys from bubbling.
+    window.addEventListener(
+      "keydown",
+      (e) => {
+        if (State.mode !== "expanded") return;
+        const t = e.target as HTMLElement | null;
+        const inText = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        const shortcut = islandShortcut(e, inText);
+        if (!shortcut) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.runIslandShortcut(shortcut);
+      },
+      true,
+    );
+
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && State.mode === "expanded" && State.view === "wardrobe") {
         this.setView(State.defaultView());
@@ -994,11 +1013,126 @@ export class Island {
     });
     await onEvent<string>("desktop-sound", (name) => Sound.play(name as Parameters<typeof Sound.play>[0]));
     await onEvent<null>("desktop-wardrobe", () => {
-      if (State.mode === "expanded" && State.view === "wardrobe") this.setView(State.defaultView());
-      else this.setView("wardrobe");
+      this.toggleWardrobe();
     });
     // Whichever page loads first, the other one hears about it.
     Bridge.toDesktop("desktop-ping", null);
+  }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+
+  private toggleWardrobe() {
+    if (State.mode === "expanded" && State.view === "wardrobe") this.setView(State.defaultView());
+    else this.setView("wardrobe");
+  }
+
+  /**
+   * A global shortcut fired (shortcuts.rs). Opening the island this way also
+   * gives it the keyboard, so its own shortcuts work right after; hovering and
+   * alerts never do.
+   */
+  onShortcut(action: ShortcutAction) {
+    State.lastActivity = performance.now();
+    const takeKeyboard = () => void Bridge.focusWindow(true);
+    switch (action) {
+      case "toggleIsland":
+        if (State.mode === "expanded") {
+          this.collapse();
+        } else {
+          this.setView(State.defaultView());
+          takeKeyboard();
+        }
+        break;
+      case "openChat":
+        this.setView("prompt");
+        break;
+      case "goToAlert": {
+        const req = State.pendingApproval;
+        if (!req) break;
+        this.alert(req.questions ? "question" : "approval");
+        takeKeyboard();
+        break;
+      }
+      case "jumpToTerminal": {
+        const task = [State.focusTask, ...State.tasks].find(
+          (t) => t?.source === "agent" && (t.sessionHost || t.sessionCwd),
+        );
+        if (task) void Bridge.openSession(task.sessionHost ?? null, task.sessionCwd ?? null);
+        break;
+      }
+      case "nextPill":
+      case "prevPill":
+        this.stepPill(action === "nextPill" ? 1 : -1);
+        takeKeyboard();
+        break;
+      case "muteToggle":
+        this.actions.toggleSound();
+        if (State.settings.soundEnabled) Sound.play("blip");
+        break;
+      case "desktopToggle":
+        if (!State.desktop.available) break;
+        Sound.play("peek");
+        void Bridge.desktopToggle();
+        break;
+      case "wardrobeToggle":
+        this.toggleWardrobe();
+        break;
+    }
+  }
+
+  private pillIds(): string[] {
+    return State.tasks.filter((t) => t.id !== TODO_PILL_ID).map((t) => t.id);
+  }
+
+  private showPill(id: string | null | undefined) {
+    if (!id) return;
+    Sound.play("blip");
+    State.setFocus(id);
+    if (State.mode !== "expanded" || State.view !== "overview") this.setView("overview");
+  }
+
+  private stepPill(delta: number) {
+    this.showPill(cyclePill(this.pillIds(), State.focusId, delta));
+  }
+
+  private runIslandShortcut(s: IslandShortcut) {
+    State.lastActivity = performance.now();
+    switch (s.kind) {
+      case "pill":
+        this.stepPill(s.delta);
+        break;
+      case "pillAt":
+        this.showPill(this.pillIds()[s.index]);
+        break;
+      case "diff": {
+        const last = State.focusTask?.edits?.at(-1);
+        if (State.openDiff) State.openDiff = null;
+        else if (last && State.focusTask?.source === "agent") State.openDiff = last.id;
+        else break;
+        Sound.play("blip");
+        if (State.view !== "overview") this.setView("overview");
+        State.notify();
+        break;
+      }
+      case "newChat":
+        State.chatHistory = [];
+        State.droppedFile = null;
+        State.promptContext = null;
+        void Bridge.chatReset();
+        Sound.play("blip");
+        this.setView("prompt");
+        State.notify();
+        break;
+      case "settings":
+        void Bridge.openSettingsWindow();
+        break;
+      case "pin":
+        State.isPinned = !State.isPinned;
+        this.fsm.pinned = State.isPinned;
+        Sound.play("blip");
+        State.notify();
+        break;
+    }
   }
 
   private onDesktopEvent(e: DesktopEvent) {

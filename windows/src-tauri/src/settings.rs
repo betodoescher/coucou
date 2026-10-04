@@ -2,6 +2,7 @@
 // No secret ever lands here — API keys live in the OS keychain (see secrets.rs).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +54,16 @@ pub struct Settings {
     /// Where he was left: his body's centre in physical screen pixels.
     #[serde(default)]
     pub desktop_mochi: Option<(f64, f64)>,
+    /// Global shortcuts are this modifier plus each action's key.
+    #[serde(default = "default_shortcut_modifier")]
+    pub shortcut_modifier: String,
+    /// Key per shortcut action ("" turns it off). Missing: its default key.
+    #[serde(default)]
+    pub shortcuts: BTreeMap<String, String>,
+}
+
+fn default_shortcut_modifier() -> String {
+    crate::shortcuts::DEFAULT_MODIFIER.into()
 }
 
 fn default_outfit() -> String {
@@ -106,6 +117,8 @@ impl Default for Settings {
             mochi_outfit: default_outfit(),
             mochi_on_desktop: false,
             desktop_mochi: None,
+            shortcut_modifier: default_shortcut_modifier(),
+            shortcuts: BTreeMap::new(),
         }
     }
 }

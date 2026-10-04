@@ -168,10 +168,9 @@ function diffCard(edit: EditInfo, onBack: () => void): HTMLElement {
 }
 
 function buildOverview(actions: ViewActions): ViewHost {
-  let diffId: string | null = null;
   const ticker = new Ticker((id) => {
     actions.blip();
-    diffId = id;
+    State.openDiff = id;
     State.notify();
   });
   const who = h("div", { class: "who" });
@@ -226,26 +225,26 @@ function buildOverview(actions: ViewActions): ViewHost {
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
-        diffId = null;
+        State.openDiff = null;
         cardKey = "";
         mode = null;
       }
 
-      const edit = diffId ? task?.edits?.find((e) => e.id === diffId) : undefined;
+      const edit = State.openDiff ? task?.edits?.find((e) => e.id === State.openDiff) : undefined;
       if (task?.source === "agent" && edit) {
         if (mode !== "diff" || cardKey !== edit.id) {
           mode = "diff";
           cardKey = edit.id;
           clear(leftBody);
           leftBody.append(diffCard(edit, () => {
-            diffId = null;
+            State.openDiff = null;
             State.notify();
           }));
         }
       // Agent sessions (Claude Code, Cursor, Kiro) show the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
       } else if (task?.source === "agent") {
-        diffId = null;
+        State.openDiff = null;
         if (mode !== "ticker") {
           clear(leftBody);
           leftBody.append(tickerBody);
