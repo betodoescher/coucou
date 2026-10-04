@@ -201,23 +201,74 @@ function statRow(icon: string, color: string, label: string, value: string): HTM
   );
 }
 
-function githubCard(): HTMLElement {
+const CI_COLORS: Record<string, string> = { failure: "#F4505E", pending: "#F5A524", success: "#22C55E" };
+const CONTRIBUTION_COLORS = ["rgba(255,255,255,0.06)", "#0E4429", "#006D32", "#26A641", "#39D353"];
+
+interface ContributionDay {
+  date: string;
+  count: number;
+  level: number;
+  weekday: number;
+}
+
+function contributions(): { total: number; days: ContributionDay[] } | null {
+  const a = get("integration_github").activity as { total?: number; days?: ContributionDay[] } | null | undefined;
+  if (!a || !Array.isArray(a.days) || a.days.length === 0) return null;
+  return { total: Number(a.total ?? 0), days: a.days };
+}
+
+function contributionCell(day: ContributionDay | null): HTMLElement {
+  return h("i", { class: "gh-cell", style: `background:${day ? CONTRIBUTION_COLORS[day.level] ?? CONTRIBUTION_COLORS[0] : "transparent"}` });
+}
+
+function contributionLabel(day: ContributionDay): string {
+  const date = new Date(`${day.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return `${date} · ${day.count} contribution${day.count === 1 ? "" : "s"}`;
+}
+
+function githubCard(onDetail: () => void): HTMLElement {
   const d = get("integration_github");
   const stars = Number(d.totalStars ?? 0);
   const repos = Number(d.totalRepos ?? 0);
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const mine = arr("integration_github", "mine");
+  const mainCi = arr("integration_github", "mainCi");
+  const reviews = arr("integration_github", "reviews");
+  const activity = contributions();
 
-  // Failed CI first, then PRs waiting for your review, then the org's open PRs.
-  const items: [string, string, string, unknown][] = [
-    ...arr("integration_github", "failures").map((f): [string, string, string, unknown] =>
-      ["#F4505E", `${f.repo} · ${f.workflow}`, String(f.url ?? ""), f.createdAt]),
-    ...arr("integration_github", "reviews").map((p): [string, string, string, unknown] =>
-      ["#F5A524", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
+  // The last seven days, opening the full grid.
+  const week = activity
+    ? h(
+        "button",
+        { class: "gh-week", title: `${activity.total} contributions in the past year`, onclick: onDetail },
+        ...activity.days.slice(-7).map(contributionCell),
+      )
+    : undefined;
+
+  // Red CI first (your PRs, then default branches), then PRs waiting for your
+  // review, your other PRs coloured by their CI, then the org's open PRs.
+  type Item = [string, string, string, unknown];
+  const ciColor = (ci: unknown) => CI_COLORS[String(ci)] ?? "#6B7079";
+  const prText = (p: Record<string, unknown>) => `${p.repo}#${p.number} · ${p.title}`;
+  const known = new Set([...mine, ...reviews].map((p) => String(p.url)));
+  const items: Item[] = [
+    ...mine.filter((p) => p.ci === "failure").map((p): Item => [ciColor(p.ci), prText(p), String(p.url ?? ""), p.createdAt]),
+    ...mainCi.filter((r) => r.ci === "failure")
+      .map((r): Item => ["#F4505E", `${r.repo} · ${r.branch} failing`, `${r.url}/actions`, null]),
+    ...reviews.map((p): Item => ["#F5A524", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
+    ...mine.filter((p) => p.ci !== "failure").map((p): Item => [ciColor(p.ci), prText(p), String(p.url ?? ""), p.createdAt]),
     ...arr("integration_github", "prs")
-      .filter((p) => !arr("integration_github", "reviews").some((r) => r.id === p.id))
-      .map((p): [string, string, string, unknown] =>
-        ["#22C55E", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
+      .filter((p) => !known.has(String(p.url)))
+      .map((p): Item => ["#22C55E", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
   ];
+
+  const failing = mine.filter((p) => p.ci === "failure").length;
+  const running = mine.filter((p) => p.ci === "pending").length;
+  const kind = mine.length
+    ? [`${mine.length} PR${mine.length === 1 ? "" : "s"}`, failing ? `${failing} failing` : running ? `${running} running` : ""]
+        .filter(Boolean).join(" · ")
+    : Number(d.openPrs ?? 0) ? `${d.openPrs} open PRs` : "Pull requests & CI";
+
   if (items.length > 0) {
     const rows = h("div", { class: "int-rows" });
     items.slice(0, 3).forEach(([accent, text, url, at], i) => {
@@ -225,7 +276,7 @@ function githubCard(): HTMLElement {
         accent,
         i === 0,
         h("span", { class: "int-name", text }),
-        h("span", { class: "int-ago", text: timeAgo(at) }),
+        h("span", { class: "int-ago", text: at ? timeAgo(at) : "" }),
       );
       if (url) {
         row.style.cursor = "pointer";
@@ -233,20 +284,55 @@ function githubCard(): HTMLElement {
       }
       rows.append(row);
     });
-    const open = Number(d.openPrs ?? 0);
-    return h("div", { class: "int-card" }, header("#F4505E", "GitHub", open ? `${open} open PRs` : "Pull requests & CI"), rows);
+    return h("div", { class: "int-card" }, header("#F4505E", "GitHub", kind, week), rows);
   }
 
+  const mainFailing = mainCi.filter((r) => r.ci === "failure").length;
+  const mainRunning = mainCi.filter((r) => r.ci === "pending").length;
+  const stats = h(
+    "div",
+    { class: "int-stats" },
+    statRow(ICONS.star, "#F5A524", "Total stars", fmt(stars)),
+    statRow(ICONS.stack, "#6B7079", "Repositories", String(repos)),
+  );
+  if (mainCi.length) {
+    stats.append(statRow(
+      ICONS.stack,
+      mainFailing ? "#F4505E" : mainRunning ? "#F5A524" : "#22C55E",
+      "Default branch CI",
+      mainFailing ? `${mainFailing} failing` : mainRunning ? `${mainRunning} running` : "all green",
+    ));
+  }
+  return h("div", { class: "int-card" }, header("#F4505E", "GitHub", "Overview", week), stats);
+}
+
+function githubActivityDetail(onBack: () => void): HTMLElement {
+  const activity = contributions();
+  const summary = activity ? `${activity.total.toLocaleString("en-US")} past year` : "";
+  const hover = h("span", { class: "gh-hover", text: summary });
+  const grid = h("div", { class: "gh-grid" });
+  if (activity) {
+    // Weeks run Sunday to Saturday; pad the first one so each row is a weekday.
+    for (let i = 0; i < (activity.days[0]?.weekday ?? 0); i++) grid.append(contributionCell(null));
+    for (const day of activity.days) {
+      const cell = contributionCell(day);
+      cell.addEventListener("mouseenter", () => (hover.textContent = contributionLabel(day)));
+      cell.addEventListener("mouseleave", () => (hover.textContent = summary));
+      grid.append(cell);
+    }
+  }
   return h(
     "div",
-    { class: "int-card" },
-    header("#F4505E", "GitHub", "Overview"),
+    { class: "int-card detail" },
     h(
       "div",
-      { class: "int-stats" },
-      statRow(ICONS.star, "#F5A524", "Total stars", fmt(stars)),
-      statRow(ICONS.stack, "#6B7079", "Repositories", String(repos)),
+      { class: "int-detail-head" },
+      h("button", { class: "int-back", onclick: onBack }, svg(ICONS.chevronLeft, 10, { stroke: 2.4 })),
+      dot("#39D353", 6),
+      h("b", { text: "Activity" }),
+      hover,
     ),
+    grid,
   );
 }
 
@@ -579,13 +665,14 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   if (task.id === "integration_vercel" && hasIntegrationData(task.id)) {
     return hooks.detailOpen ? vercelDetail(hooks.closeDetail) : vercelCard(hooks.openDetail);
   }
+  if (task.id === "integration_github" && hasIntegrationData(task.id)) {
+    return hooks.detailOpen && contributions() ? githubActivityDetail(hooks.closeDetail) : githubCard(hooks.openDetail);
+  }
   if (!hasIntegrationData(task.id)) return idleCard(task, hooks.openSettings);
 
   switch (task.id) {
     case "integration_resend":
       return resendCard();
-    case "integration_github":
-      return githubCard();
     case "integration_stripe":
       return stripeCard();
     case "integration_notion":
