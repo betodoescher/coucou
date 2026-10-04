@@ -8,7 +8,7 @@ import { Sound } from "../core/sound";
 import { CLAUDE_ID, State, type ApprovalInfo, type AskQuestion } from "../core/state";
 import type { Island } from "./island";
 import { refreshUsage } from "./integrations";
-import { EDIT_MARK, baseName, editStep, oneLine } from "../core/steps";
+import { EDIT_MARK, baseName, editStep, oneLine, unjoinSentences } from "../core/steps";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -369,7 +369,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "AfterAgentResponse": {
       const t = State.tasks.find((x) => x.id === agentId);
-      if (t && payload.text) t.lastReply = payload.text;
+      if (t && payload.text) t.lastReply = unjoinSentences(payload.text);
       break;
     }
 

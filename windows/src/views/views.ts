@@ -559,12 +559,14 @@ function buildQuestion(actions: ViewActions): ViewHost {
 function buildError(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title", text: "Workflow stopped." });
-  const detail = h("div", { class: "detail" });
+  const detail = h("div", { class: "detail clamp-2" });
   const row = h("div", { class: "actions" },
     btn("Retry", "primary", () => actions.setView(State.defaultView())),
     btn("Open in n8n", "secondary", () => actions.openUrl("")),
   );
-  const el = h("div", { class: "view" }, card("red", stack(116, 16, who, title, detail, row)));
+  const body = stack(116, 16, who, title, detail, row);
+  body.classList.add("bot-slot");
+  const el = h("div", { class: "view" }, card("red", body));
   return {
     el,
     sync() {
@@ -581,12 +583,14 @@ function buildError(actions: ViewActions): ViewHost {
 
 function buildFinished(actions: ViewActions): ViewHost {
   const who = h("div");
-  const title = h("div", { class: "title" });
+  const title = h("div", { class: "title clamp-2" });
   const row = h("div", { class: "actions" },
     btn("Open terminal", "primary", () => actions.openTerminal()),
     btn("OK", "secondary", () => actions.collapse()),
   );
-  const el = h("div", { class: "view" }, card("green", stack(116, 16, who, title, row)));
+  const body = stack(116, 16, who, title, row);
+  body.classList.add("bot-slot");
+  const el = h("div", { class: "view" }, card("green", body));
   return {
     el,
     sync() {

@@ -345,11 +345,14 @@ function cursorSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(false);
   const state = h("span", { class: "hint", text: "Checking the Cursor CLI…" });
 
-  const model = h("select", {}) as HTMLSelectElement;
+  const model = h("select", { style: "flex:1 1 0;min-width:0" }) as HTMLSelectElement;
   const setModels = (list: [string, string][]) => {
     clear(model);
     if (!list.some(([id]) => id === "auto")) list.unshift(["auto", "Auto"]);
-    for (const [id, label] of list) model.append(h("option", { value: id, text: `${label} (${id})` }));
+    // The CLI's "(current, default)": "current" is the CLI's own pick, not Coucou's.
+    for (const [id, label] of list) {
+      model.append(h("option", { value: id, text: label.replace(/\s*\(current\)|current,\s*/g, "") }));
+    }
     if (!list.some(([id]) => id === settings.cursorModel)) {
       model.append(h("option", { value: settings.cursorModel, text: settings.cursorModel }));
     }
@@ -435,7 +438,7 @@ function kiroSection(): HTMLElement {
   const dot = statusDot(false);
   const state = h("span", { class: "hint", text: "Checking the Kiro CLI…" });
 
-  const model = h("select", {}) as HTMLSelectElement;
+  const model = h("select", { style: "flex:1 1 0;min-width:0" }) as HTMLSelectElement;
   const setModels = (list: [string, string][]) => {
     clear(model);
     if (!list.some(([id]) => id === "auto")) list.unshift(["auto", "auto"]);
@@ -768,6 +771,8 @@ function generalSection(): HTMLElement {
 // ── Boot ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // WebKitGTK draws <select> with the GTK theme, taller than every other field.
+  if (/Linux/.test(navigator.userAgent)) document.documentElement.classList.add("linux");
   const boot = await Bridge.boot();
   if (boot) {
     settings = { ...settings, ...boot.settings };
