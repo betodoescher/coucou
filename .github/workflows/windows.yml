@@ -111,7 +111,7 @@ jobs:
           $header = @"
           # 🪟 Coucou for Windows $v
 
-          **Mochi at the top of your screen**, now with Cursor, Kiro, your plans' usage, and your whole day in the island.
+          **Mochi at the top of your screen**, your agents' questions, edits and answers, your plans' usage, and your whole day in the island.
 
           ## 📦 Install
 
