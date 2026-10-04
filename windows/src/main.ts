@@ -26,6 +26,7 @@ async function main() {
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
   island.setMovable(boot?.islandMovable ?? false);
+  await island.wireDesktop(boot?.desktopMochi ?? false, boot?.cursorPoll ?? true);
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
 

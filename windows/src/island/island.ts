@@ -2,7 +2,8 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { Tracked, Spring, clamp } from "../core/anim";
-import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
+import { Bridge, IS_TAURI, onDragDrop, onEvent, type DesktopEvent } from "../core/bridge";
+import { alertAction } from "../desktop/logic";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
@@ -96,6 +97,20 @@ export class Island {
   private movable = false;
   private drag: { x: number; y: number; moved: boolean; busy: boolean } | null = null;
 
+  /** A press on Mochi that may turn into dragging him out onto the desktop. */
+  private botPress: { x: number; y: number; compact: boolean } | null = null;
+  /** This press is dragging Mochi out, until the button comes up. */
+  private draggingOut = false;
+  private botDragBusy = false;
+  private cursorPoll = true;
+  /** The desktop Mochi is in the island for an alert (or has not flown out yet). */
+  private desktopAtIsland = false;
+  private desktopFlightTimer: number | null = null;
+  /** Mochi only leaves for the desktop once the launch greeting is over. */
+  private greeted = false;
+  private desktopKey = "";
+  private lastEffective: string | null = null;
+
   /** Drop sequence bookkeeping: last tick played, and whether the ✓ has fired. */
   private uploadTens = 0;
   private uploadDone = false;
@@ -106,7 +121,10 @@ export class Island {
     this.wireFsm();
     this.wireInput();
     this.engine.onDizzy = () => this.handleDizzy();
-    this.greeting.onComplete = () => this.fsm.greetComplete();
+    this.greeting.onComplete = () => {
+      this.greeted = true;
+      this.fsm.greetComplete();
+    };
     State.subscribe(() => {
       this.dirty = true;
       this.ensureRunning();
@@ -593,6 +611,15 @@ export class Island {
       Sound.resume();
       State.lastActivity = performance.now();
       if (e.button === 2) return;
+      // Mochi may be dragged out onto the desktop: wait to see whether the
+      // press moves before slapping him or opening the island.
+      this.botPress = null;
+      this.draggingOut = false;
+      if (e.button === 0 && State.desktop.available && State.mode !== "hidden" && this.isBotHit(e.clientX, e.clientY)) {
+        this.cancelBotHover();
+        this.botPress = { x: e.clientX, y: e.clientY, compact: State.mode !== "expanded" };
+        return;
+      }
       if (State.mode !== "expanded") {
         this.fsm.click();
         return;
@@ -614,6 +641,10 @@ export class Island {
     // client position: the gap to it is the whole step still to make. One
     // step in flight at a time keeps a late move from being counted twice.
     window.addEventListener("mousemove", (e) => {
+      if (this.botPress || this.draggingOut) {
+        this.dragMochi(e);
+        return;
+      }
       const d = this.drag;
       if (!d) return;
       const dx = e.clientX - d.x;
@@ -626,6 +657,16 @@ export class Island {
     });
 
     window.addEventListener("mouseup", () => {
+      const press = this.botPress;
+      this.botPress = null;
+      if (this.draggingOut) {
+        this.draggingOut = false;
+        if (!this.cursorPoll) void Bridge.desktopDrop();
+      } else if (press) {
+        // A plain click on Mochi: what it always did.
+        if (press.compact) this.fsm.click();
+        else this.engine.slap();
+      }
       if (this.drag?.moved) void Bridge.saveIslandPosition();
       this.drag = null;
     });
@@ -705,6 +746,7 @@ export class Island {
   }
 
   private isBotHit(x: number, y: number): boolean {
+    if (this.botAway) return false;
     const rect = this.islandRect();
     const cx = rect.x + this.botCx.value;
     const cy = rect.y + this.botCy.value;
@@ -810,6 +852,7 @@ export class Island {
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
+    this.syncDesktop();
 
     // Nothing is drawn while the island is hidden, so nothing may keep the loop
     // alive either. This used to read `... || this.engine.busy || State.mode !==
@@ -841,10 +884,10 @@ export class Island {
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
     // The drop canvas draws its own Mochi; two of them would overlap.
-    const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
+    const visible = p.opacity > 0 && !greetingActive && !this.uploadActive && !this.botAway;
     this.botCanvas.style.opacity = visible ? "1" : "0";
 
-    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
+    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive && !this.botAway) {
       const d = p.diameter;
       const color = botGlowColor(State.effectiveState);
       this.botGlow.style.display = "block";
@@ -910,14 +953,132 @@ export class Island {
     if (!inWardrobe) State.wardrobePreview = null;
     const onHome = State.focusId == null || State.focusId === HOME_ID;
     const show = onHome || State.mode !== "expanded" || inWardrobe;
+    this.engine.setOutfit(show ? this.chosenOutfit() : "none", !inWardrobe);
+  }
+
+  /** The outfit Mochi wears as himself: the wardrobe preview, or the user's choice. */
+  private chosenOutfit(): Worn {
     const today = new Date().toDateString();
     if (this.outfitDay !== today) {
       this.outfitDay = today;
       this.seasonal = seasonalOutfit();
     }
     const choice = parseOutfitChoice(State.settings.mochiOutfit);
-    const worn = State.wardrobePreview ?? (choice === "auto" ? this.seasonal : choice);
-    this.engine.setOutfit(show ? worn : "none", !inWardrobe);
+    return State.wardrobePreview ?? (choice === "auto" ? this.seasonal : choice);
+  }
+
+  // ── Mochi on the desktop ────────────────────────────────────────────────────
+
+  /** Mochi is out of the island: on the desktop, or on his way there. */
+  private get botAway(): boolean {
+    return State.desktop.visible || State.desktop.dragging;
+  }
+
+  /** Listens to desktop.rs and to the desktop Mochi's page. */
+  async wireDesktop(available: boolean, cursorPoll: boolean) {
+    State.desktop.available = available;
+    this.cursorPoll = cursorPoll;
+    if (!available) return;
+    // Left on the desktop last time: he flies back out once the greeting is over.
+    this.desktopAtIsland = State.settings.mochiOnDesktop;
+    window.setTimeout(() => {
+      this.greeted = true;
+      this.ensureRunning();
+    }, 8000);
+
+    await onEvent<DesktopEvent>("desktop-mochi", (e) => this.onDesktopEvent(e));
+    await onEvent<null>("desktop-hello", () => {
+      void Bridge.log("desktop Mochi page ready");
+      this.desktopKey = "";
+      this.ensureRunning();
+    });
+    await onEvent<string>("desktop-sound", (name) => Sound.play(name as Parameters<typeof Sound.play>[0]));
+    await onEvent<null>("desktop-wardrobe", () => {
+      if (State.mode === "expanded" && State.view === "wardrobe") this.setView(State.defaultView());
+      else this.setView("wardrobe");
+    });
+    // Whichever page loads first, the other one hears about it.
+    Bridge.toDesktop("desktop-ping", null);
+  }
+
+  private onDesktopEvent(e: DesktopEvent) {
+    const wasOnDesktop = State.settings.mochiOnDesktop;
+    State.settings.mochiOnDesktop = e.onDesktop;
+    State.desktop.visible = e.visible;
+    State.desktop.dragging = false;
+    if (e.landed) {
+      this.desktopAtIsland = false;
+      if (!wasOnDesktop) Sound.play("pop");
+    }
+    if (!e.onDesktop) this.desktopAtIsland = false;
+    this.desktopKey = "";
+    State.notify();
+  }
+
+  /** Mochi grabbed in the island: past a few pixels he leaves for the desktop. */
+  private dragMochi(e: MouseEvent) {
+    const press = this.botPress;
+    if (press && !this.draggingOut) {
+      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 6) return;
+      this.botPress = null;
+      this.draggingOut = true;
+      State.desktop.dragging = true;
+      this.desktopKey = "";
+      this.syncDesktop();
+      Sound.play("peek");
+      void Bridge.desktopDragStart(e.screenX, e.screenY);
+      this.ensureRunning();
+      return;
+    }
+    if (this.cursorPoll || this.botDragBusy) return;
+    this.botDragBusy = true;
+    void Bridge.desktopDrag(e.screenX, e.screenY).finally(() => { this.botDragBusy = false; });
+  }
+
+  /**
+   * Keeps the desktop Mochi in step: what he feels and wears, a happy jump when
+   * a task finishes, and the trip to the island while a permission or a
+   * question waits for an answer.
+   */
+  private syncDesktop() {
+    if (!State.desktop.available) return;
+    const state = State.effectiveState;
+
+    if (this.botAway) {
+      const inWardrobe = State.mode === "expanded" && State.view === "wardrobe";
+      const outfit = this.chosenOutfit();
+      const key = `${state}|${outfit}`;
+      if (key !== this.desktopKey) {
+        this.desktopKey = key;
+        Bridge.toDesktop("desktop-state", { state, outfit, animated: !inWardrobe });
+      }
+      if (state === "finished" && this.lastEffective !== "finished") Bridge.toDesktop("desktop-emote", "happy");
+    }
+    this.lastEffective = state;
+
+    const action = alertAction({
+      onDesktop: State.settings.mochiOnDesktop,
+      atIsland: this.desktopAtIsland,
+      alert: State.pendingApproval != null,
+    });
+    if (action === "retract") {
+      this.desktopAtIsland = true;
+      if (this.desktopFlightTimer != null) window.clearTimeout(this.desktopFlightTimer);
+      if (State.desktop.visible) {
+        Bridge.toDesktop("desktop-emote", "surprised");
+        this.desktopFlightTimer = window.setTimeout(() => {
+          this.desktopFlightTimer = null;
+          void Bridge.desktopFly(false);
+        }, 450);
+      }
+    } else if (action === "fly-out" && this.greeted && this.desktopFlightTimer == null) {
+      this.desktopFlightTimer = window.setTimeout(() => {
+        this.desktopFlightTimer = null;
+        if (State.pendingApproval != null || !State.settings.mochiOnDesktop) return;
+        this.desktopAtIsland = false;
+        void Bridge.desktopFly(true);
+      }, 600);
+    }
   }
 
   /** BotCanvasView.lookX / lookY — tanh of the distance to the bot. */

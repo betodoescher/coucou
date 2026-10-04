@@ -155,6 +155,10 @@ export interface Settings {
   weatherCity: string;
   /** Mochi's outfit (see mochi/outfits.ts); "auto" follows the seasons. */
   mochiOutfit: string;
+  /** Mochi lives on the desktop. Written by Rust only. */
+  mochiOnDesktop: boolean;
+  /** His spot on the desktop, physical screen pixels. Written by Rust only. */
+  desktopMochi: [number, number] | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -177,6 +181,8 @@ export const DEFAULT_SETTINGS: Settings = {
   islandOffset: null,
   weatherCity: "",
   mochiOutfit: "auto",
+  mochiOnDesktop: false,
+  desktopMochi: null,
 };
 
 type Listener = () => void;
@@ -211,6 +217,12 @@ class AppState {
   pendingApproval: ApprovalInfo | null = null;
   /** The outfit hovered in the wardrobe, worn as a preview until the pointer leaves. */
   wardrobePreview: Worn | null = null;
+
+  /**
+   * Mochi on the desktop: whether this desktop allows it, whether his window
+   * is on screen, and whether he is being dragged out of the island.
+   */
+  desktop = { available: false, visible: false, dragging: false };
 
   integrations: Record<string, IntegrationInfo> = {};
 

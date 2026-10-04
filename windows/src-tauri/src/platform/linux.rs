@@ -323,6 +323,33 @@ pub fn set_input_region(win: &WebviewWindow, rect: Region) {
     apply_input_region(&gw, rect);
 }
 
+/// Desktop Mochi: an always-on-top window that never takes focus. A Dock, like
+/// the island, so "show desktop" leaves him where he is.
+pub fn make_floating(win: &WebviewWindow) {
+    let Ok(gw) = win.gtk_window() else { return };
+    gw.set_accept_focus(false);
+    if !gw.is_realized() {
+        let dock = std::env::var("COUCOU_DOCK").map(|v| v != "0").unwrap_or(true);
+        gw.set_type_hint(if dock {
+            gtk::gdk::WindowTypeHint::Dock
+        } else {
+            gtk::gdk::WindowTypeHint::Utility
+        });
+    }
+    gw.set_keep_above(true);
+}
+
+/// Only `rect` of this window takes the mouse, for good: GTK resets the input
+/// region on every map, so it is applied again each time.
+pub fn shape_window(win: &WebviewWindow, rect: (f64, f64, f64, f64)) {
+    let Ok(gw) = win.gtk_window() else { return };
+    apply_input_region(&gw, Some(rect));
+    gw.connect_map_event(move |w, _| {
+        apply_input_region(w, Some(rect));
+        gtk::glib::Propagation::Proceed
+    });
+}
+
 fn apply_input_region(gw: &impl IsA<gtk::Widget>, rect: Region) {
     match rect {
         None => gw.input_shape_combine_region(None),

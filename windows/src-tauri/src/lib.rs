@@ -2,6 +2,7 @@
 
 mod claude;
 mod cursor_chat;
+mod desktop;
 mod kiro_chat;
 mod files;
 mod hooks;
@@ -50,6 +51,8 @@ pub struct BootInfo {
     cursor_poll: bool,
     /// False on a layer-shell surface, which the compositor pins to the top edge.
     island_movable: bool,
+    /// Mochi can be dragged out onto the desktop.
+    desktop_mochi: bool,
 }
 
 #[tauri::command]
@@ -65,6 +68,7 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
         hook_path: settings::hook_exe_path().to_string_lossy().to_string(),
         cursor_poll: platform::CURSOR_POLL,
         island_movable: platform::island_movable(),
+        desktop_mochi: desktop::available(),
     }
 }
 
@@ -74,6 +78,8 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
         settings.island_offset = current.island_offset;
+        settings.mochi_on_desktop = current.mochi_on_desktop;
+        settings.desktop_mochi = current.desktop_mochi;
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
         *current = settings.clone();
@@ -172,6 +178,41 @@ fn store_island_offset(app: &AppHandle, shared: &Shared, offset: Option<(f64, f6
         log::line(format!("could not save the island position: {err}"));
     }
     let _ = app.emit("settings-changed", updated);
+}
+
+// ── Mochi on the desktop ──────────────────────────────────────────────────────
+
+/// Mochi grabbed, in the island or on the desktop. `x`/`y` are the page's
+/// screen coordinates, used where Rust cannot read the cursor itself.
+#[tauri::command]
+fn desktop_mochi_drag_start(app: AppHandle, window: tauri::WebviewWindow, x: f64, y: f64) {
+    desktop::drag_start(&app, window.scale_factor().unwrap_or(1.0), x, y);
+}
+
+#[tauri::command]
+fn desktop_mochi_drag(app: AppHandle, window: tauri::WebviewWindow, x: f64, y: f64) {
+    desktop::drag_to(&app, window.scale_factor().unwrap_or(1.0), x, y);
+}
+
+#[tauri::command]
+fn desktop_mochi_drop(app: AppHandle) {
+    desktop::drop(&app);
+}
+
+#[tauri::command]
+fn desktop_mochi_home(app: AppHandle) {
+    desktop::go_home(&app);
+}
+
+/// `out`: from the island to his spot; otherwise back into the island for an
+/// alert, keeping the user's choice.
+#[tauri::command]
+fn desktop_mochi_fly(app: AppHandle, out: bool) {
+    if out {
+        desktop::fly_out(&app);
+    } else {
+        desktop::retract(&app);
+    }
 }
 
 #[tauri::command]
@@ -460,16 +501,16 @@ fn log_line(message: String) {
 /// error anywhere.
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
 
-/// In a dev build the pages are served by Vite, so the second window needs the
+/// In a dev build the pages are served by Vite, so the other windows need the
 /// absolute dev URL; a bundled build resolves it inside the app bundle.
-fn settings_page_url(app: &AppHandle) -> WebviewUrl {
+fn page_url(app: &AppHandle, page: &str) -> WebviewUrl {
     #[cfg(dev)]
     if let Some(mut base) = app.config().build.dev_url.clone() {
-        base.set_path("/settings.html");
+        base.set_path(&format!("/{page}"));
         return WebviewUrl::External(base);
     }
     let _ = app;
-    WebviewUrl::App("settings.html".into())
+    WebviewUrl::App(page.into())
 }
 
 /// The settings window is created hidden at launch and only ever shown and
@@ -477,7 +518,7 @@ fn settings_page_url(app: &AppHandle) -> WebviewUrl {
 /// not — silently comes up blank in this app, so the window that works is the
 /// one that exists before the island's webview does.
 fn create_settings_window(app: &AppHandle) {
-    let url = settings_page_url(app);
+    let url = page_url(app, "settings.html");
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
         .title("Settings — Coucou")
@@ -575,12 +616,18 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            desktop_mochi_drag_start,
+            desktop_mochi_drag,
+            desktop_mochi_drop,
+            desktop_mochi_home,
+            desktop_mochi_fly,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);
+            desktop::create(&handle, page_url(&handle, "mochi.html"), BROWSER_ARGS);
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);

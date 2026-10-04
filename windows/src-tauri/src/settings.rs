@@ -46,6 +46,13 @@ pub struct Settings {
     /// Mochi's outfit: "auto" follows the seasons. Same values as macOS.
     #[serde(default = "default_outfit")]
     pub mochi_outfit: String,
+    /// Mochi was dragged out of the island and lives on the desktop. Owned by
+    /// Rust, like island_offset.
+    #[serde(default)]
+    pub mochi_on_desktop: bool,
+    /// Where he was left: his body's centre in physical screen pixels.
+    #[serde(default)]
+    pub desktop_mochi: Option<(f64, f64)>,
 }
 
 fn default_outfit() -> String {
@@ -97,6 +104,8 @@ impl Default for Settings {
             island_offset: None,
             weather_city: String::new(),
             mochi_outfit: default_outfit(),
+            mochi_on_desktop: false,
+            desktop_mochi: None,
         }
     }
 }

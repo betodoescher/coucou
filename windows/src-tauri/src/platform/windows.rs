@@ -238,3 +238,11 @@ pub fn set_activating(win: &WebviewWindow, activating: bool) {
 
 /// Click-through here is the poll's WS_EX_TRANSPARENT toggle, not a region.
 pub fn set_input_region(_win: &WebviewWindow, _rect: Option<(f64, f64, f64, f64)>) {}
+
+/// Desktop Mochi: never takes focus, never shows in Alt-Tab.
+pub fn make_floating(win: &WebviewWindow) {
+    make_non_activating(win);
+}
+
+/// Desktop Mochi's click-through is also the poll's toggle (see desktop.rs).
+pub fn shape_window(_win: &WebviewWindow, _rect: (f64, f64, f64, f64)) {}
