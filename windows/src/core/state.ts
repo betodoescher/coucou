@@ -161,6 +161,10 @@ export interface Settings {
   mochiOnDesktop: boolean;
   /** His spot on the desktop, physical screen pixels. Written by Rust only. */
   desktopMochi: [number, number] | null;
+  /** Global shortcuts: this modifier plus each action's key. */
+  shortcutModifier: string;
+  /** Key per shortcut action ("" = off). Missing: its default key. */
+  shortcuts: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -185,6 +189,8 @@ export const DEFAULT_SETTINGS: Settings = {
   mochiOutfit: "auto",
   mochiOnDesktop: false,
   desktopMochi: null,
+  shortcutModifier: "Ctrl+Shift+Alt",
+  shortcuts: {},
 };
 
 type Listener = () => void;
@@ -206,6 +212,8 @@ class AppState {
 
   isPinned = false;
   paused = false;
+  /** The edit whose diff the overview shows in place of the ticker. */
+  openDiff: string | null = null;
 
   uploadProgress = 0;
   uploadDuration = 2.4;

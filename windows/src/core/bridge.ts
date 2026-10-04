@@ -173,11 +173,23 @@ export const Bridge = {
   desktopDrop: () => call<void>("desktop_mochi_drop"),
   /** `out`: from the island to his spot; otherwise into the island for an alert. */
   desktopFly: (out: boolean) => call<void>("desktop_mochi_fly", { out }),
+  /** The shortcut: home if he is out, out to his spot if he is home. */
+  desktopToggle: () => call<void>("desktop_mochi_toggle"),
   /** Tells the desktop Mochi's page something (state, emote). */
   toDesktop: (event: string, payload: unknown) => {
     if (IS_TAURI) void emitTo("mochi", event, payload).catch(() => {});
   },
+
+  /** Which global shortcuts are registered; updates arrive as "shortcuts-status". */
+  shortcutsStatus: () => call<ShortcutsStatus>("shortcuts_status"),
 };
+
+/** What shortcuts.rs reports about the global shortcuts. */
+export interface ShortcutsStatus {
+  /** "hotkey": Coucou grabs the keys. "portal": the desktop does, and has the final say. */
+  backend: string;
+  entries: { action: string; keys: string; state: "on" | "off" | "taken" | "invalid" | "pending" }[];
+}
 
 /** What desktop.rs reports whenever the desktop Mochi changes. */
 export interface DesktopEvent {

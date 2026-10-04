@@ -3,6 +3,7 @@
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
+import type { ShortcutAction } from "./core/shortcuts";
 import { State, type Settings } from "./core/state";
 import { Todos } from "./core/todoStore";
 import { nextWake, ringsAt } from "./core/todos";
@@ -56,6 +57,8 @@ async function main() {
   });
 
   await onEvent<null>("screen-changed", () => void Bridge.reposition());
+
+  await onEvent<ShortcutAction>("shortcut", (action) => island.onShortcut(action));
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {

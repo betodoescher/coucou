@@ -51,6 +51,26 @@ Everything else happens on its own: a Claude Code permission request opens the
 island with **Deny / Allow**, a finished session shows what it did, and
 your integrations sit in the coloured pills next to Mochi.
 
+### Keyboard shortcuts
+
+These work from any app, with `Ctrl+Shift+Alt` by default (Settings → Shortcuts
+lets you pick another modifier, change each key or turn it off):
+
+| Keys | What happens |
+|---|---|
+| `Space` | Opens the chat |
+| `A` | Goes to the waiting permission or question |
+| `T` | Brings the agent's window forward |
+| `]` / `[` | Next / previous pill |
+| `M` | Mutes or unmutes Mochi |
+| `D` | Sends Mochi to the desktop and back |
+| `G` | Opens or closes the wardrobe |
+
+"Open / close the island" has no key until you give it one. Inside the open
+island: `Ctrl+→` / `Ctrl+←` and `Ctrl+1`–`Ctrl+9` switch pills, `Ctrl+E` opens
+the latest diff, `Ctrl+K` starts a new conversation, `Ctrl+,` opens Settings and
+`Ctrl+P` pins the island.
+
 ## Claude Code
 
 <img src="screenshots/settings.png" width="562" alt="The settings window">
@@ -210,6 +230,10 @@ What changes on Linux:
 - **Claude Code hooks** go through `~/.local/share/coucou/bin/coucou-hook` and a
   Unix socket at `$XDG_RUNTIME_DIR/coucou.sock`. Both ends check that the other
   runs as the same user.
+- **Keyboard shortcuts** on Wayland go through the desktop's GlobalShortcuts
+  portal: the desktop asks once to allow them and keeps them in its own
+  keyboard settings, where you change them afterwards. On X11, or with
+  `COUCOU_SHORTCUTS=x11`, Coucou grabs the keys itself.
 - **Keys** live in the Secret Service (GNOME Keyring, KWallet).
 - **Files**: preferences in `~/.config/coucou/`, the log at
   `~/.local/share/coucou/coucou.log`.

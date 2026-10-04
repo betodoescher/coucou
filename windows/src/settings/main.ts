@@ -3,7 +3,10 @@
 // integrations land here too in a later stage.
 
 import "./settings.css";
-import { Bridge, onEvent, type HookStatus, type HookTarget } from "../core/bridge";
+import { Bridge, onEvent, type HookStatus, type HookTarget, type ShortcutsStatus } from "../core/bridge";
+import {
+  ISLAND_SHORTCUTS, MODIFIERS, SHORTCUTS, duplicates, keyName, keyOf, type ShortcutAction,
+} from "../core/shortcuts";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 import { Todos } from "../core/todoStore";
@@ -686,6 +689,129 @@ function tasksSection(): HTMLElement {
 
 // ── General section ───────────────────────────────────────────────────────────
 
+// ── Shortcuts section ─────────────────────────────────────────────────────────
+
+const SHORTCUT_PROBLEM: Record<string, [string, string]> = {
+  taken: ["#f5a524", "Another app already uses it"],
+  invalid: ["#f4505e", "Not a key Coucou can use"],
+  pending: ["#a0a3ab", "Waiting for your desktop's OK"],
+};
+
+function shortcutsSection(): HTMLElement {
+  const body = h("div", { style: "display:flex;flex-direction:column;gap:12px" });
+  const section = h("section", {}, h("h2", {}, h("span", { text: "Shortcuts" })), body);
+  let status: ShortcutsStatus = { backend: "hotkey", entries: [] };
+  let recording: ShortcutAction | null = null;
+
+  const setKey = (action: ShortcutAction, key: string) => {
+    settings.shortcuts = { ...settings.shortcuts, [action]: key };
+    void save();
+    draw();
+  };
+
+  // While a key is being recorded, the next press is the key, Esc gives up and
+  // Backspace turns the shortcut off.
+  document.addEventListener(
+    "keydown",
+    (e) => {
+      if (!recording) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const action = recording;
+      if (e.key === "Escape") {
+        recording = null;
+        draw();
+      } else if (e.key === "Backspace" || e.key === "Delete") {
+        recording = null;
+        setKey(action, "");
+      } else {
+        const key = keyName(e);
+        if (!key) return;
+        recording = null;
+        setKey(action, key);
+      }
+    },
+    true,
+  );
+
+  function draw() {
+    clear(body);
+    const portal = status.backend === "portal";
+    body.append(h("div", {
+      class: "hint",
+      text: portal
+        ? "These work from any app. Your desktop asks once to allow them and keeps them in its own keyboard settings: change them there afterwards. The keys below are what Coucou suggests the first time."
+        : "These work from any app. Click a key to change it, press Backspace while recording to turn it off.",
+    }));
+
+    const modifier = h("select", { style: "flex:1 1 0;min-width:0" }) as HTMLSelectElement;
+    const choices = MODIFIERS.includes(settings.shortcutModifier)
+      ? MODIFIERS
+      : [settings.shortcutModifier, ...MODIFIERS];
+    for (const m of choices) modifier.append(h("option", { value: m, text: m.replaceAll("+", " + ") }));
+    modifier.value = settings.shortcutModifier;
+    modifier.addEventListener("change", () => {
+      settings.shortcutModifier = modifier.value;
+      void save();
+      draw();
+    });
+    body.append(h("div", { class: "row" }, h("label", { text: "Modifier" }), modifier));
+
+    const dups = duplicates(settings.shortcuts);
+    for (const { action, label } of SHORTCUTS) {
+      const key = keyOf(settings.shortcuts, action);
+      const entry = status.entries.find((e) => e.action === action);
+      const shown = recording === action
+        ? "Press a key…"
+        : key
+          ? (portal && entry?.state === "on" ? entry.keys : `${settings.shortcutModifier}+${key}`).replaceAll("+", " + ")
+          : "Off";
+      const record = h("button", { text: shown, style: "min-width:150px" });
+      record.addEventListener("click", () => {
+        recording = recording === action ? null : action;
+        draw();
+      });
+      const on = toggle(!!key, (v) => {
+        const fallback = SHORTCUTS.find((s) => s.action === action)?.key || "I";
+        setKey(action, v ? fallback : "");
+      });
+      const row = h("div", { class: "row" }, h("label", { text: label }), record, h("div", { class: "spacer" }), on);
+      body.append(row);
+      const problem = dups.has(action)
+        ? (["#f4505e", "Same key as another shortcut"] as [string, string])
+        : key && entry ? SHORTCUT_PROBLEM[entry.state] : undefined;
+      if (problem) {
+        body.append(h("div", { class: "hint", style: `color:${problem[0]};margin-top:-8px`, text: problem[1] }));
+      }
+    }
+
+    const reset = h("button", { text: "Reset all" });
+    reset.addEventListener("click", () => {
+      settings.shortcuts = {};
+      settings.shortcutModifier = DEFAULT_SETTINGS.shortcutModifier;
+      void save();
+      draw();
+    });
+    body.append(h("div", { class: "row" }, reset));
+
+    body.append(h("div", { class: "hint", text: "In the open island:" }));
+    for (const [keys, what] of ISLAND_SHORTCUTS) {
+      body.append(h("div", { class: "row" }, h("label", { text: keys }), h("span", { class: "hint", text: what })));
+    }
+  }
+
+  void (async () => {
+    status = (await Bridge.shortcutsStatus()) ?? status;
+    draw();
+    void onEvent<ShortcutsStatus>("shortcuts-status", (s) => {
+      status = s;
+      if (!recording) draw();
+    });
+  })();
+  draw();
+  return section;
+}
+
 function generalSection(): HTMLElement {
   const volume = h("input", {
     type: "range", min: "0", max: "0.2", step: "0.005",
@@ -806,6 +932,7 @@ async function main() {
     integrationsSection(present),
     tasksSection(),
     generalSection(),
+    shortcutsSection(),
     h("div", {
       class: "hint",
       text: "No telemetry. Network requests only go to the services you configure yourself.",

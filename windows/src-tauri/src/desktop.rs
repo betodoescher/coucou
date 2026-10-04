@@ -314,6 +314,28 @@ pub fn go_home(app: &AppHandle) {
     retract(app);
 }
 
+/// The shortcut: home if he is out, otherwise out to where he was last left,
+/// or the bottom-right corner the first time.
+pub fn toggle(app: &AppHandle) {
+    let Some(win) = window(app) else { return };
+    let out = app
+        .try_state::<crate::Shared>()
+        .map(|s| s.settings.lock().unwrap().mochi_on_desktop)
+        .unwrap_or(false);
+    if out {
+        go_home(app);
+        return;
+    }
+    if saved_spot(app, &win).is_none() {
+        let Some(from) = island_spot(app) else { return };
+        let Some(area) = work_area(app, from) else { return };
+        let corner = clamp_center((f64::MAX, f64::MAX), area, scale(&win));
+        store(app, |s| s.desktop_mochi = Some(corner));
+    }
+    store(app, |s| s.mochi_on_desktop = true);
+    fly_out(app);
+}
+
 /// Back to the island, keeping the user's choice (an alert, or going home).
 pub fn retract(app: &AppHandle) {
     let Some(win) = window(app) else { return };

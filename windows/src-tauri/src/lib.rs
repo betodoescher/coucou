@@ -14,6 +14,7 @@ mod platform;
 mod secrets;
 mod session_host;
 mod settings;
+mod shortcuts;
 mod todos;
 mod tray;
 mod usage;
@@ -76,16 +77,21 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 #[tauri::command]
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     let mut settings = settings;
-    let (screen_changed, autostart_changed) = {
+    let (screen_changed, autostart_changed, shortcuts_changed) = {
         let mut current = shared.settings.lock().unwrap();
         settings.island_offset = current.island_offset;
         settings.mochi_on_desktop = current.mochi_on_desktop;
         settings.desktop_mochi = current.desktop_mochi;
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let shortcuts_changed =
+            shortcuts::wanted(&current) != shortcuts::wanted(&settings);
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        (screen_changed, autostart_changed, shortcuts_changed)
     };
+    if shortcuts_changed {
+        shortcuts::apply(&app, &settings);
+    }
     if let Err(err) = settings::save(&settings) {
         eprintln!("[coucou] could not save settings: {err}");
     }
@@ -203,6 +209,18 @@ fn desktop_mochi_drop(app: AppHandle) {
 #[tauri::command]
 fn desktop_mochi_home(app: AppHandle) {
     desktop::go_home(&app);
+}
+
+#[tauri::command]
+fn desktop_mochi_toggle(app: AppHandle) {
+    desktop::toggle(&app);
+}
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn shortcuts_status() -> shortcuts::Status {
+    shortcuts::status()
 }
 
 /// `out`: from the island to his spot; otherwise back into the island for an
@@ -573,6 +591,7 @@ pub fn run() {
             let _ = app.emit_to(island::WINDOW_LABEL, "tray", "open".to_string());
         }))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(Shared {
             settings: Mutex::new(loaded.clone()),
             gate: gate.clone(),
@@ -625,7 +644,9 @@ pub fn run() {
             desktop_mochi_drag,
             desktop_mochi_drop,
             desktop_mochi_home,
+            desktop_mochi_toggle,
             desktop_mochi_fly,
+            shortcuts_status,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -652,6 +673,7 @@ pub fn run() {
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());
+            shortcuts::apply(&handle, &loaded);
             Ok(())
         })
         .run(tauri::generate_context!())
