@@ -8,6 +8,7 @@ import { Sound } from "../core/sound";
 import { CLAUDE_ID, State } from "../core/state";
 import type { Island } from "./island";
 import { refreshUsage } from "./integrations";
+import { EDIT_MARK, baseName, editStep, oneLine } from "../core/steps";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -29,6 +30,39 @@ interface HookPayload {
   reason?: string;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
+  /** A file edit, summarised by coucou-hook. */
+  coucou_diff?: { path: string; added: number; removed: number; lines: string[] };
+  /** Claude Code's Stop: its last answer. */
+  last_assistant_message?: string;
+  /** Cursor's afterAgentResponse: the answer. */
+  text?: string;
+}
+
+/** Edits kept per pill; older ones fall off with their ticker steps. */
+const MAX_EDITS = 20;
+let editSeq = 0;
+
+function recordEdit(taskId: string, diff: NonNullable<HookPayload["coucou_diff"]>) {
+  const task = State.tasks.find((t) => t.id === taskId);
+  if (!task || !diff.path) return;
+  const id = String(++editSeq);
+  task.edits = [...(task.edits ?? []), { id, ...diff }].slice(-MAX_EDITS);
+  // The PreToolUse step for this file is already there: it becomes the edit.
+  const tail = ` · ${baseName(diff.path)}`;
+  let at = -1;
+  for (let i = task.steps.length - 1; i >= Math.max(0, task.steps.length - 3); i--) {
+    const s = task.steps[i];
+    if (!s.startsWith(EDIT_MARK) && s.endsWith(tail)) {
+      at = i;
+      break;
+    }
+  }
+  if (at >= 0) {
+    task.steps[at] = editStep(id);
+    State.notify();
+  } else {
+    State.appendStep(taskId, editStep(id));
+  }
 }
 
 /** Agents Coucou installs hooks for: their pill name and colour. */
@@ -193,6 +227,14 @@ function handleHook(island: Island, payload: HookPayload) {
   };
 
   if (name === "SessionStart" || name === "UserPromptSubmit") stopped.delete(agentId);
+  if (name !== "Stop" && name !== "SessionEnd" && name !== "AfterAgentResponse") {
+    const t = State.tasks.find((x) => x.id === agentId);
+    if (t) t.finalShown = false;
+  }
+  if (payload.coucou_diff) {
+    ensurePill();
+    recordEdit(agentId, payload.coucou_diff);
+  }
 
   switch (name) {
     case "SessionStart":
@@ -242,9 +284,22 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
     }
 
+    case "AfterAgentResponse": {
+      const t = State.tasks.find((x) => x.id === agentId);
+      if (t && payload.text) t.lastReply = payload.text;
+      break;
+    }
+
     case "Stop": {
-      const said = payload.message ?? payload.assistant_response;
-      if (said) State.appendStep(agentId, said.slice(0, 60));
+      const t = State.tasks.find((x) => x.id === agentId);
+      const said = oneLine(
+        payload.last_assistant_message ?? payload.assistant_response ?? t?.lastReply ?? payload.message ?? "",
+      );
+      if (t) t.lastReply = undefined;
+      if (said) {
+        State.appendStep(agentId, said);
+        if (t) t.finalShown = true;
+      }
       stopped.add(agentId);
       announce("finished");
       break;
