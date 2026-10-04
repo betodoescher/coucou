@@ -19,6 +19,7 @@
 //! also read from the JSON). Without `--agent` the caller is Claude Code.
 //! `--ask` is the PreToolUse hook matched on `AskUserQuestion`: anything else
 //! reaching it exits at once.
+//! `coucou-hook --statusline [--wrap <hex>]` is Claude Code's status line.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -60,6 +61,15 @@ fn main() {
     if std::env::var_os(QUIET_ENV).is_some() {
         std::process::exit(0);
     }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--statusline") {
+        let wrapped = args
+            .iter()
+            .position(|a| a == "--wrap")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|h| unhex(h));
+        statusline(wrapped);
+    }
     let Some(Event { payload, name: event, agent, questions }) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest" || event == QUESTION_EVENT;
@@ -93,6 +103,75 @@ fn main() {
     }
     // Nothing printed: the agent asks or carries on as if we were not here.
     std::process::exit(0);
+}
+
+/// Claude Code's status line: hands the plan limits to the app, then runs the
+/// status line the user had before (kept hex-encoded in `--wrap`) so it shows
+/// exactly as it did. The app is told in parallel and never delays the line.
+fn statusline(wrapped: Option<String>) -> ! {
+    let mut raw = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut raw);
+
+    let (tx, rx) = mpsc::channel::<()>();
+    if let Some(line) = statusline_payload(&raw) {
+        std::thread::spawn(move || {
+            talk(&line, false);
+            let _ = tx.send(());
+        });
+    } else {
+        drop(tx);
+    }
+
+    let code = wrapped.map_or(0, |cmd| run_wrapped(&cmd, &raw));
+    let _ = rx.recv_timeout(STATUSLINE_BUDGET);
+    std::process::exit(code);
+}
+
+/// How long the relay may outlive the user's own status line.
+const STATUSLINE_BUDGET: Duration = Duration::from_millis(500);
+
+/// Only the limits travel: the rest of the status line JSON stays on this machine.
+fn statusline_payload(raw: &[u8]) -> Option<String> {
+    let raw = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(raw);
+    let v = serde_json::from_slice::<serde_json::Value>(raw).ok()?;
+    let limits = v.get("rate_limits").filter(|l| l.is_object())?;
+    let mut line = serde_json::json!({ "hook_event_name": "StatusLine", "rate_limits": limits }).to_string();
+    line.push('\n');
+    Some(line)
+}
+
+/// Runs the user's previous status line with the same input; its output and
+/// exit code are the status line's.
+fn run_wrapped(cmd: &str, input: &[u8]) -> i32 {
+    use std::process::{Command, Stdio};
+    let spawn = |program: &str, flag: &str| {
+        Command::new(program)
+            .args([flag, cmd])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+    };
+    // Claude Code runs status lines through `sh` (Git Bash on Windows).
+    let child = spawn("sh", "-c");
+    #[cfg(windows)]
+    let child = child.or_else(|_| spawn("cmd", "/C"));
+    let Ok(mut child) = child else { return 0 };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input);
+    }
+    child.wait().ok().and_then(|s| s.code()).unwrap_or(0)
+}
+
+fn unhex(s: &str) -> Option<String> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// The island's answer in each agent's own words: stdout, stderr, exit code.
@@ -416,6 +495,25 @@ mod tests {
         for bad in ["allow", "deny", "", r#"{"answers":{}}"#, r#"{"other":1}"#] {
             assert!(question_answer(&questions, bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_status_line_relays_only_the_limits() {
+        let raw = br#"{"model":{"id":"opus"},"cwd":"/secret","rate_limits":{"five_hour":{"used_percentage":42,"resets_at":1791050000}}}"#;
+        let line = statusline_payload(raw).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(v["hook_event_name"], "StatusLine");
+        assert_eq!(v["rate_limits"]["five_hour"]["used_percentage"], 42);
+        assert!(!line.contains("secret"));
+        assert!(statusline_payload(br#"{"model":{}}"#).is_none());
+        assert!(statusline_payload(b"garbage").is_none());
+    }
+
+    #[test]
+    fn the_wrapped_command_round_trips() {
+        assert_eq!(unhex("6563686f2027c3a92720247e").as_deref(), Some("echo 'é' $~"));
+        assert!(unhex("abc").is_none());
+        assert!(unhex("zz").is_none());
     }
 
     #[test]

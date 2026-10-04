@@ -3,7 +3,7 @@
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
 import type { Worn } from "../mochi/outfits";
-import type { CursorPlan, KiroPlan } from "./bridge";
+import type { ClaudePlan, CursorPlan, KiroPlan } from "./bridge";
 
 export type AgentSource = "home" | "n8n" | "agent" | "todos";
 
@@ -215,7 +215,12 @@ class AppState {
   integrations: Record<string, IntegrationInfo> = {};
 
   /** AI usage for the home card; null until first read. */
-  usage: { claudeTokens: number; cursor: CursorPlan | null; kiro: KiroPlan | null } | null = null;
+  usage: {
+    claudeTokens: number;
+    claudePlan: ClaudePlan | null;
+    cursor: CursorPlan | null;
+    kiro: KiroPlan | null;
+  } | null = null;
 
   lastActivity = performance.now();
 

@@ -215,6 +215,80 @@ fn is_question_entry(entry: &Value) -> bool {
     entry.get("matcher").and_then(Value::as_str) == Some(QUESTION_TOOL) && entry_is_ours(entry)
 }
 
+/// Claude Code only hands the plan limits to its status line. Ours relays
+/// them and then runs the user's own status line, carried hex-encoded in the
+/// command so uninstalling can put it back exactly.
+fn statusline_command(previous: Option<&str>) -> String {
+    match previous {
+        Some(cmd) => format!("{} --statusline --wrap {}", quoted_exe(), hex(cmd)),
+        None => format!("{} --statusline", quoted_exe()),
+    }
+}
+
+fn statusline_ours(line: &Value) -> Option<&str> {
+    line.get("command").and_then(Value::as_str).filter(|c| c.contains(MARKER))
+}
+
+/// The user's own status line command wrapped inside ours, if any.
+fn statusline_wrapped(command: &str) -> Option<String> {
+    let (_, rest) = command.split_once("--wrap ")?;
+    unhex(rest.split_whitespace().next()?)
+}
+
+/// Whether installing would add our status line (a line Coucou can't wrap doesn't count).
+fn statusline_missing(settings: &Value) -> bool {
+    let line = &settings["statusLine"];
+    line.is_null() || line["command"].as_str().is_some() && statusline_ours(line).is_none()
+}
+
+fn with_our_statusline(root: &mut Map<String, Value>) {
+    let line = match root.get("statusLine") {
+        None => json!({ "type": "command", "command": statusline_command(None) }),
+        Some(Value::Object(current)) => {
+            let Some(command) = current.get("command").and_then(Value::as_str) else { return };
+            let previous = match statusline_ours(&Value::Object(current.clone())) {
+                Some(ours) => statusline_wrapped(ours),
+                None => Some(command.to_string()),
+            };
+            let mut line = current.clone();
+            line.insert("command".into(), json!(statusline_command(previous.as_deref())));
+            Value::Object(line)
+        }
+        Some(_) => return,
+    };
+    root.insert("statusLine".into(), line);
+}
+
+fn without_our_statusline(root: &mut Map<String, Value>) {
+    let Some(line) = root.get("statusLine") else { return };
+    let Some(ours) = statusline_ours(line) else { return };
+    match statusline_wrapped(ours) {
+        Some(previous) => {
+            let mut line = line.as_object().cloned().unwrap_or_default();
+            line.insert("command".into(), json!(previous));
+            root.insert("statusLine".into(), Value::Object(line));
+        }
+        None => {
+            root.remove("statusLine");
+        }
+    }
+}
+
+fn hex(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<String> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
 /// `s` as one single-quoted shell word: `'` becomes `'\''`, nothing else is
 /// special inside single quotes.
 #[cfg(unix)]
@@ -292,6 +366,9 @@ fn merged(t: Target, existing: &Value) -> Value {
     }
 
     root.insert("hooks".into(), Value::Object(hooks));
+    if t == Target::Claude {
+        with_our_statusline(&mut root);
+    }
     Value::Object(root)
 }
 
@@ -302,6 +379,9 @@ fn without_ours(t: Target, existing: &Value) -> Value {
         return Value::Null;
     }
     let mut root = existing.as_object().cloned().unwrap_or_default();
+    if t == Target::Claude {
+        without_our_statusline(&mut root);
+    }
     let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
         return Value::Object(root);
     };
@@ -393,9 +473,10 @@ pub fn status(t: Target) -> HookStatus {
         && (events(t).iter().any(|(event, _)| {
             !current["hooks"][*event].as_array().is_some_and(|list| list.iter().any(entry_is_ours))
         }) || t == Target::Claude
-            && !current["hooks"]["PreToolUse"]
+            && (!current["hooks"]["PreToolUse"]
                 .as_array()
-                .is_some_and(|list| list.iter().any(is_question_entry)));
+                .is_some_and(|list| list.iter().any(is_question_entry))
+                || statusline_missing(&current)));
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
@@ -740,6 +821,35 @@ mod tests {
         // And removing ours puts it back exactly as it was.
         let cleaned = without_ours(Target::Claude, &after);
         assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn the_status_line_wraps_the_users_own_and_gives_it_back() {
+        let none = merged(Target::Claude, &json!({}));
+        assert!(none["statusLine"]["command"].as_str().unwrap().ends_with("--statusline"));
+        assert!(!statusline_missing(&none));
+        assert_eq!(without_ours(Target::Claude, &none), json!({}));
+
+        let mine = json!({ "statusLine": { "type": "command", "command": "~/bin/line.sh \"$X\"", "padding": 2 } });
+        assert!(statusline_missing(&mine));
+        let wrapped = merged(Target::Claude, &mine);
+        let command = wrapped["statusLine"]["command"].as_str().unwrap();
+        assert!(command.contains("--statusline --wrap "));
+        assert_eq!(statusline_wrapped(command).as_deref(), Some("~/bin/line.sh \"$X\""));
+        assert_eq!(wrapped["statusLine"]["padding"], 2);
+        // Reinstalling keeps the same wrapped line instead of wrapping ours.
+        let again = merged(Target::Claude, &wrapped);
+        let again = again["statusLine"]["command"].as_str().unwrap();
+        assert_eq!(statusline_wrapped(again).as_deref(), Some("~/bin/line.sh \"$X\""));
+        let restored = without_ours(Target::Claude, &wrapped);
+        assert_eq!(restored["statusLine"], mine["statusLine"]);
+
+        // A status line without a command is left alone.
+        let odd = json!({ "statusLine": { "type": "static" } });
+        assert_eq!(merged(Target::Claude, &odd)["statusLine"], odd["statusLine"]);
+        assert!(!statusline_missing(&odd));
+        // Cursor has no status line.
+        assert!(merged(Target::Cursor, &json!({})).get("statusLine").is_none());
     }
 
     #[test]

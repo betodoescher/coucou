@@ -195,6 +195,22 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         .unwrap_or_default()
         .to_string();
 
+    // Claude's status line: plan limits only, no session, no log line (it runs
+    // on every message).
+    if event == "StatusLine" {
+        pipe.finish();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or_default();
+        if let Some(plan) = crate::usage::parse_claude_plan(&payload["rate_limits"], now_ms) {
+            if crate::usage::save_claude_plan(&plan) {
+                let _ = app.emit_to(WINDOW_LABEL, "claude-plan", plan);
+            }
+        }
+        return;
+    }
+
     // The chat's own CLI runs are not sessions. Closing without a word lets a
     // waiting hook carry on as if Coucou were not there.
     if crate::hooks::is_own_workdir(payload.get("cwd").and_then(Value::as_str).unwrap_or_default()) {
