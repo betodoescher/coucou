@@ -7,6 +7,7 @@ import { Bridge, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
+import { renderMarkdown } from "./markdown";
 
 let nextId = 1;
 
@@ -18,7 +19,8 @@ function bubble(message: ChatMessage): HTMLElement {
       h("div", { class: "bubble", text: message.content }),
     );
   }
-  return h("div", { class: "chat-row" }, h("div", { class: "reply", text: message.content }));
+  const reply = h("div", { class: "reply" }, renderMarkdown(message.content, (url) => void Bridge.openUrl(url)));
+  return h("div", { class: "chat-row" }, reply);
 }
 
 function typingDots(): HTMLElement {

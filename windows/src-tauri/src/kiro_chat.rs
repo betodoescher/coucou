@@ -48,6 +48,7 @@ fn workdir() -> Result<std::path::PathBuf, String> {
 fn command(cli: &std::path::Path) -> Command {
     let mut cmd = Command::new(cli);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.env(crate::hooks::QUIET_ENV, "1");
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     cmd

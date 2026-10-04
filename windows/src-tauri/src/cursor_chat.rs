@@ -75,6 +75,7 @@ fn workdir() -> Result<std::path::PathBuf, String> {
 fn command(cli: &std::path::Path) -> Command {
     let mut cmd = Command::new(cli);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.env(crate::hooks::QUIET_ENV, "1");
     // Through the environment, never argv: other users can read argv in `ps`.
     // Without a key the CLI uses the `agent login` session, i.e. the plan.
     if let Some(key) = secrets::get("cursor-api-key") {
@@ -250,6 +251,7 @@ pub async fn plan_usage() -> Result<CursorPlan, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .env(crate::hooks::QUIET_ENV, "1")
         .kill_on_drop(true);
     if let Some(key) = secrets::get("cursor-api-key") {
         cmd.env("CURSOR_API_KEY", key);

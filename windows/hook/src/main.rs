@@ -45,7 +45,13 @@ mod unix;
 #[cfg(target_os = "linux")]
 use unix::connect;
 
+/// Set by Coucou on the agent CLIs it runs itself (its chat, `/usage`).
+const QUIET_ENV: &str = "COUCOU_QUIET";
+
 fn main() {
+    if std::env::var_os(QUIET_ENV).is_some() {
+        std::process::exit(0);
+    }
     let Some((payload, event, agent)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
