@@ -54,6 +54,8 @@ const CURSOR_EVENTS: &[(&str, u64)] = &[
     ("postToolUse", 10),
     ("postToolUseFailure", 10),
     ("beforeShellExecution", 120),
+    ("afterFileEdit", 10),
+    ("afterAgentResponse", 10),
     ("stop", 10),
     ("subagentStart", 10),
     ("subagentStop", 10),
@@ -97,6 +99,8 @@ pub fn is_own_workdir(cwd: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {
     pub installed: bool,
+    /// Installed, but missing an event this version listens to: reinstalling fixes it.
+    pub outdated: bool,
     pub settings_path: String,
     pub hook_path: String,
     pub hook_ready: bool,
@@ -357,9 +361,15 @@ pub fn status(t: Target) -> HookStatus {
             })
             .unwrap_or(false),
     };
+    let outdated = installed
+        && t != Target::Kiro
+        && events(t).iter().any(|(event, _)| {
+            !current["hooks"][*event].as_array().is_some_and(|list| list.iter().any(entry_is_ours))
+        });
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
+        outdated,
         settings_path: settings_path(t).to_string_lossy().to_string(),
         hook_ready: hook_path.exists(),
         hook_path: hook_path.to_string_lossy().to_string(),
