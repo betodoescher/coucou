@@ -10,12 +10,15 @@
 //! * Every step runs under a deadline enforced by the main thread, so a pipe that
 //!   accepts the connection and then stops reading cannot wedge the session
 //!   either: we abandon the worker and exit.
-//! * Only `PermissionRequest` waits for an answer, because approving from the
-//!   island is the whole point. No answer means empty stdout, and Claude Code
-//!   asks in the terminal exactly as if Coucou were not installed.
+//! * Only `PermissionRequest` and a question (`--ask`) wait for an answer,
+//!   because answering from the island is the whole point. No answer means
+//!   empty stdout, and Claude Code asks in the terminal exactly as if Coucou
+//!   were not installed.
 //!
-//! Usage: `coucou-hook [--agent cursor|kiro] <EventName>` (the name is also
-//! read from the JSON). Without `--agent` the caller is Claude Code.
+//! Usage: `coucou-hook [--agent cursor|kiro] [--ask] <EventName>` (the name is
+//! also read from the JSON). Without `--agent` the caller is Claude Code.
+//! `--ask` is the PreToolUse hook matched on `AskUserQuestion`: anything else
+//! reaching it exits at once.
 
 use std::io::{Read, Write};
 use std::sync::mpsc;
@@ -45,10 +48,13 @@ mod unix;
 #[cfg(target_os = "linux")]
 use unix::connect;
 
-fn main() {
-    let Some((payload, event, agent)) = read_event() else { std::process::exit(0) };
+/// The event name the app knows a question by.
+const QUESTION_EVENT: &str = "AskUserQuestion";
 
-    let waits_for_answer = event == "PermissionRequest";
+fn main() {
+    let Some(Event { payload, name: event, agent, questions }) = read_event() else { std::process::exit(0) };
+
+    let waits_for_answer = event == "PermissionRequest" || event == QUESTION_EVENT;
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
 
     // The worker owns every blocking call. If it overruns the budget we simply
@@ -61,7 +67,11 @@ fn main() {
     });
 
     if let Ok(Some(decision)) = rx.recv_timeout(budget) {
-        if let Some((stdout, stderr, code)) = answer(&agent, &decision) {
+        let reply = match &questions {
+            Some(q) => question_answer(q, &decision).map(|out| (out, "", 0)),
+            None => answer(&agent, &decision),
+        };
+        if let Some((stdout, stderr, code)) = reply {
             if !stdout.is_empty() {
                 let mut out = std::io::stdout();
                 let _ = writeln!(out, "{stdout}");
@@ -139,8 +149,39 @@ fn decision_json(decision: &str) -> Option<String> {
     ))
 }
 
-/// Reads stdin and returns the payload to forward, the event name and the agent.
-fn read_event() -> Option<(String, String, String)> {
+/// The island answers a question with `{"answers":{"<question>":"<label>"}}`
+/// (an array of labels for a multi-select). Claude Code takes them back as the
+/// tool's input, next to the untouched questions.
+fn question_answer(questions: &serde_json::Value, decision: &str) -> Option<String> {
+    let reply = serde_json::from_str::<serde_json::Value>(decision.trim()).ok()?;
+    let answers = reply.get("answers")?.as_object()?;
+    if answers.is_empty() {
+        return None;
+    }
+    Some(
+        serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": { "questions": questions, "answers": answers },
+            }
+        })
+        .to_string(),
+    )
+}
+
+struct Event {
+    /// The line to forward to the app.
+    payload: String,
+    name: String,
+    agent: String,
+    /// A question's `tool_input.questions` as Claude Code sent it, before any
+    /// truncation: the answer must hand them back unchanged.
+    questions: Option<serde_json::Value>,
+}
+
+/// Reads stdin and returns what to forward and how to answer.
+fn read_event() -> Option<Event> {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
@@ -158,16 +199,27 @@ fn read_event() -> Option<(String, String, String)> {
     // Absent or invalid names are validated and discarded by the app, not here.
     let mut agent = String::new();
     let mut arg_event = String::new();
+    let mut ask = false;
     {
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
             if arg == "--agent" {
                 agent = it.next().unwrap_or_default();
+            } else if arg == "--ask" {
+                ask = true;
             } else if arg_event.is_empty() {
                 arg_event = arg;
             }
         }
     }
+    let questions = if ask {
+        if map.get("tool_name").and_then(|v| v.as_str()) != Some(QUESTION_EVENT) {
+            return None;
+        }
+        Some(map.get("tool_input")?.get("questions")?.clone())
+    } else {
+        None
+    };
     // Which agent this hook was installed for. Absent means Claude Code,
     // so existing hook commands keep working unchanged.
     if !agent.is_empty() {
@@ -179,7 +231,7 @@ fn read_event() -> Option<(String, String, String)> {
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
-    let event = normalize(&agent, &event, map);
+    let event = if questions.is_some() { QUESTION_EVENT.to_string() } else { normalize(&agent, &event, map) };
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
 
     for field in DROPPED_FIELDS {
@@ -231,7 +283,7 @@ fn read_event() -> Option<(String, String, String)> {
 
     let mut line = payload.to_string();
     line.push('\n');
-    Some((line, event, agent))
+    Some(Event { payload: line, name: event, agent, questions })
 }
 
 /// Caps every string in the payload. A single Write can carry a whole file.
@@ -336,6 +388,25 @@ mod tests {
         k.insert("tool_name".into(), serde_json::json!("fs_read"));
         assert_eq!(normalize("kiro", "PreToolUse", &mut k), "PreToolUse");
         assert_eq!(normalize("", "preToolUse", &mut k), "preToolUse");
+    }
+
+    #[test]
+    fn question_answers_go_back_with_the_untouched_questions() {
+        let questions = serde_json::json!([{ "question": "Which DB?", "options": [{ "label": "Postgres" }, { "label": "SQLite" }] }]);
+        let out = question_answer(&questions, r#"{"answers":{"Which DB?":"Postgres"}}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let o = &v["hookSpecificOutput"];
+        assert_eq!(o["hookEventName"], "PreToolUse");
+        assert_eq!(o["permissionDecision"], "allow");
+        assert_eq!(o["updatedInput"]["questions"], questions);
+        assert_eq!(o["updatedInput"]["answers"]["Which DB?"], "Postgres");
+        // Multi-select answers are arrays and pass through as such.
+        let multi = question_answer(&questions, r#"{"answers":{"Which DB?":["Postgres","SQLite"]}}"#).unwrap();
+        assert!(multi.contains(r#"["Postgres","SQLite"]"#));
+        // Anything else, including the permission words, prints nothing.
+        for bad in ["allow", "deny", "", r#"{"answers":{}}"#, r#"{"other":1}"#] {
+            assert!(question_answer(&questions, bad).is_none(), "{bad}");
+        }
     }
 
     #[test]
