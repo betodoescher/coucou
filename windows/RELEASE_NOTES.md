@@ -3,7 +3,7 @@
 Mochi now **keeps an eye on your Claude plan limits and your GitHub CI**, so you know when to slow down and when your PR is ready to merge.
 
 > [!IMPORTANT]
-> Coming from 0.1.x? Open **Settings** and **reinstall the hooks** for Claude Code and Cursor to get questions, file edits, final answers and Claude's plan limits. As always, you see the diff and a backup is made first.
+> Open **Settings** and **reinstall the Claude Code hooks** to see your plan limits (and the Cursor hooks too if you are coming from 0.1.x). As always, you see the diff and a backup is made first.
 
 ### ⏱️ Claude's plan limits on the home card
 - **See how much of your 5-hour and weekly Claude limits you have used**, right next to today's tokens. Hover for both windows and when each one resets.
