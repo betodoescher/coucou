@@ -110,6 +110,13 @@ function hookSection(status: HookStatus, target: HookTarget = "claude"): HTMLEle
       ),
     );
 
+    if (status.outdated) {
+      body.append(h("div", {
+        class: "notice warn",
+        text: "Reinstall the hooks to answer Claude's questions from the island (Claude Code 2.1.85 or later).",
+      }));
+    }
+
     if (!status.hookReady) {
       body.append(h("div", {
         class: "notice warn",
@@ -764,7 +771,7 @@ async function main() {
     settings = { ...settings, ...boot.settings };
     version = boot.version;
   }
-  const noStatus = { installed: false, settingsPath: "", hookPath: "", hookReady: false };
+  const noStatus = { installed: false, outdated: false, settingsPath: "", hookPath: "", hookReady: false };
   const status = (await Bridge.hooksStatus()) ?? noStatus;
   const cursorHooks = (await Bridge.hooksStatus("cursor")) ?? { ...noStatus };
   const kiroHooks = (await Bridge.hooksStatus("kiro")) ?? { ...noStatus };

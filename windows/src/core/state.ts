@@ -49,6 +49,16 @@ export interface ApprovalInfo {
   sessionId: string;
   tool: string;
   command: string;
+  /** Set when this is a Claude Code question rather than a permission. */
+  questions?: AskQuestion[];
+}
+
+/** One question of Claude Code's AskUserQuestion tool. */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: { label: string; description: string }[];
+  multiSelect: boolean;
 }
 
 export interface ChatMessage {

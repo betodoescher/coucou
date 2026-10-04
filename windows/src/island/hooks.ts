@@ -5,7 +5,7 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { CLAUDE_ID, State } from "../core/state";
+import { CLAUDE_ID, State, type ApprovalInfo, type AskQuestion } from "../core/state";
 import type { Island } from "./island";
 import { refreshUsage } from "./integrations";
 
@@ -127,6 +127,33 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
+/** Claude Code's question tool, answered on the island through its own hook. */
+const QUESTION_TOOL = "AskUserQuestion";
+
+/** 1–4 questions of 2–4 options each, or null: a malformed one goes to the terminal. */
+export function parseQuestions(input: Record<string, unknown>): AskQuestion[] | null {
+  const raw = input.questions;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 4) return null;
+  const out: AskQuestion[] = [];
+  for (const q of raw as Record<string, unknown>[]) {
+    const options = q?.options;
+    if (typeof q?.question !== "string" || !q.question || !Array.isArray(options)) return null;
+    if (options.length < 2 || options.length > 4) return null;
+    const opts = (options as Record<string, unknown>[]).map((o) => ({
+      label: typeof o?.label === "string" ? o.label : "",
+      description: typeof o?.description === "string" ? o.description : "",
+    }));
+    if (opts.some((o) => !o.label)) return null;
+    out.push({
+      question: q.question,
+      header: typeof q.header === "string" ? q.header.slice(0, 12) : "",
+      options: opts,
+      multiSelect: q.multiSelect === true,
+    });
+  }
+  return out;
+}
+
 /** Agent pills that already announced the end of this turn. */
 const stopped = new Set<string>();
 /** Pills waiting to go once their session ended and the island closed. */
@@ -192,6 +219,45 @@ function handleHook(island: Island, payload: HookPayload) {
     window.setTimeout(() => void refreshUsage(true), 2000);
   };
 
+  /**
+   * Puts a request that waits for a human on screen. One card, one request: a
+   * second one must never quietly replace the first — that would leave a human
+   * staring at request B while request A waits for a decision nobody can give.
+   * It goes straight back to the terminal instead.
+   */
+  const holdCard = (info: ApprovalInfo, view: "approval" | "question", sound: "approval" | "question") => {
+    const { requestId } = info;
+    if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
+      if (requestId) void Bridge.approvalDecline(requestId);
+      return;
+    }
+    ensurePill();
+    if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+    State.pendingApproval = info;
+    // The relay's short ack window closes in 800 ms; everything below this
+    // line is synchronous, so the card really is up by the time it lands.
+    if (requestId) void Bridge.approvalAck(requestId);
+    State.updateTask(agentId, view);
+    State.isPinned = true;
+    Sound.play(sound);
+    // Agents always open on their own card, whatever had the focus.
+    State.focusId = agentId;
+    island.alert(view);
+    // Coucou answers within 108 s or not at all; after that the terminal has
+    // taken over and the card would be lying.
+    pendingTimeout = window.setTimeout(() => {
+      pendingTimeout = null;
+      if (!State.pendingApproval) return;
+      State.pendingApproval = null;
+      State.isPinned = false;
+      island.dropPin();
+      State.updateTask(agentId, "working");
+      State.setPillBadge(agentId, null);
+      if (State.view === view) island.setView(State.defaultView());
+      State.notify();
+    }, 110_000);
+  };
+
   if (name === "SessionStart" || name === "UserPromptSubmit") stopped.delete(agentId);
 
   switch (name) {
@@ -213,8 +279,10 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PreToolUse": {
       ensurePill();
-      State.updateTask(agentId, "working");
       const tool = payload.tool_name ?? "Tool";
+      // The question has its own hook and card; this copy is only noise.
+      if (tool === QUESTION_TOOL) break;
+      State.updateTask(agentId, "working");
       State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
       surface("overview", false);
       break;
@@ -283,10 +351,38 @@ function handleHook(island: Island, payload: HookPayload) {
       State.appendStep(agentId, "• subagent done");
       break;
 
+    case QUESTION_TOOL: {
+      const requestId = payload.request_id ?? "";
+      const questions = parseQuestions(payload.tool_input ?? {});
+      if (isExternalAgent || !questions) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
+      holdCard(
+        {
+          taskId: agentId,
+          requestId,
+          sessionId: payload.session_id ?? "",
+          tool: QUESTION_TOOL,
+          command: questions[0].question,
+          questions,
+        },
+        "question",
+        "question",
+      );
+      break;
+    }
+
     case "PermissionRequest": {
       const requestId = payload.request_id ?? "";
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
+      // Reaching here means the question was sent back to the terminal: it
+      // stays there rather than turning into an Allow/Deny card.
+      if (tool === QUESTION_TOOL) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
       // Cursor and Kiro send every shell command here (the relay renames their
       // events). Kiro has no PreToolUse step for it, so the ticker gets it here;
       // Cursor already sent one. Unless approvals for agents are on, the command
@@ -301,46 +397,17 @@ function handleHook(island: Island, payload: HookPayload) {
           break;
         }
       }
-
-
-      // One card, one request. A second one must never quietly replace the first
-      // — that would leave a human staring at request B while request A waits for
-      // a decision nobody can give. Hand it straight back to the terminal.
-      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-        if (requestId) void Bridge.approvalDecline(requestId);
-        break;
-      }
-      ensurePill();
-      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-      State.pendingApproval = {
-        taskId: agentId,
-        requestId,
-        sessionId: payload.session_id ?? "",
-        tool,
-        command: approvalTarget(tool, input),
-      };
-      // The relay's short ack window closes in 800 ms; everything below this
-      // line is synchronous, so the card really is up by the time it lands.
-      if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(agentId, "approval");
-      State.isPinned = true;
-      Sound.play("approval");
-      // Agents always open on their own card, whatever had the focus.
-      State.focusId = agentId;
-      island.alert("approval");
-      // Coucou answers within 108 s or not at all; after that the terminal has
-      // taken over and the card would be lying.
-      pendingTimeout = window.setTimeout(() => {
-        pendingTimeout = null;
-        if (!State.pendingApproval) return;
-        State.pendingApproval = null;
-        State.isPinned = false;
-        island.dropPin();
-        State.updateTask(agentId, "working");
-        State.setPillBadge(agentId, null);
-        if (State.view === "approval") island.setView(State.defaultView());
-        State.notify();
-      }, 110_000);
+      holdCard(
+        {
+          taskId: agentId,
+          requestId,
+          sessionId: payload.session_id ?? "",
+          tool,
+          command: approvalTarget(tool, input),
+        },
+        "approval",
+        "approval",
+      );
       break;
     }
 
