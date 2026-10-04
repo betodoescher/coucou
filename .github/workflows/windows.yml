@@ -12,12 +12,11 @@ on:
 permissions:
   contents: write
 
-# Publishing is paused: Defender flags the unsigned installer as
-# Trojan:Win32/Wacatac.H!ml (false positive, reported to Microsoft). Tags still
-# build, to check the app compiles, but nothing is uploaded. Set this back to
-# 'true' once the installer is signed or the detection is cleared.
+# Defender may flag the unsigned installer as Trojan:Win32/Wacatac.H!ml (false
+# positive, reported to Microsoft); the release notes say so. Set to 'false' to
+# build tags without uploading anything.
 env:
-  PUBLISH: 'false'
+  PUBLISH: 'true'
 
 jobs:
   build:
@@ -114,7 +113,9 @@ jobs:
 
           Download ``Coucou-Windows-$v-setup.exe`` and run it. The installer is not
           code-signed yet, so Windows SmartScreen shows a warning: click
-          **More info → Run anyway**.
+          **More info → Run anyway**. Microsoft Defender may also flag it as
+          ``Trojan:Win32/Wacatac.H!ml``; this is a known false positive for unsigned
+          installers and has been reported to Microsoft.
           "@
           # --latest=false is not cosmetic: without it GitHub hands "Latest" to
           # whichever release was published last, and the site's Download for Mac
