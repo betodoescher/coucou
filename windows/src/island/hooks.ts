@@ -36,6 +36,18 @@ interface HookPayload {
   last_assistant_message?: string;
   /** Cursor's afterAgentResponse: the answer. */
   text?: string;
+  /** Cursor's postToolUseFailure: "error", "timeout" or "permission_denied". */
+  failure_type?: string;
+  /** Claude Code's PostToolUseFailure: the user interrupted the tool. */
+  is_interrupt?: boolean;
+}
+
+function failureStep(payload: HookPayload): string {
+  const tool = payload.tool_name ?? "Tool";
+  if (payload.failure_type === "permission_denied") return `⚠ ${tool} denied`;
+  if (payload.failure_type === "timeout") return `⚠ ${tool} timed out`;
+  if (payload.is_interrupt) return `⚠ ${tool} interrupted`;
+  return `⚠ ${tool} failed`;
 }
 
 /** Edits kept per pill; older ones fall off with their ticker steps. */
@@ -268,7 +280,7 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PostToolUseFailure":
       State.updateTask(agentId, "working");
-      State.appendStep(agentId, "⚠ failed");
+      State.appendStep(agentId, failureStep(payload));
       break;
 
     case "Notification": {

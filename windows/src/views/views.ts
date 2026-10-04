@@ -495,7 +495,9 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, State.focusTask?.source === "agent" ? "finished" : "Claude Code finished"));
-      title.textContent = stepPlain(State.focusTask, State.focusTask?.steps.at(-1)) || "Session finished";
+      // A tool failure the agent got past isn't how the turn ended.
+      const last = stepPlain(State.focusTask, State.focusTask?.steps.at(-1));
+      title.textContent = last && !last.startsWith("⚠") ? last : "Session finished";
     },
   };
 }
