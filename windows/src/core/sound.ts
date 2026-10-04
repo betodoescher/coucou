@@ -1,5 +1,5 @@
 // SoundEngine — port of SoundEngine.swift.
-// The 28 WAVs are the macOS app's own files (see SOUNDS_DIR in vite.config.ts);
+// The WAVs are the macOS app's own files (see SOUNDS_DIR in vite.config.ts);
 // they are served at /sounds/<name>.wav. Default volume 0.12, slider range 0–0.2,
 // exactly like the Mac player, and several sounds may overlap.
 
@@ -7,7 +7,7 @@ export const SOUND_NAMES = [
   "peek", "open", "close", "hover", "blip", "slap", "annoyed", "dizzy", "greet",
   "work", "finish", "error", "approval", "question", "approve", "gulp", "tick",
   "send", "love", "pop", "proud", "wink", "yawn", "attach", "think", "search",
-  "rate", "sleep",
+  "rate", "sleep", "greeting",
 ] as const;
 
 export type SoundName = (typeof SOUND_NAMES)[number];
@@ -21,6 +21,7 @@ class SoundEngine {
   private buffers = new Map<string, AudioBuffer>();
   private loading: Promise<void> | null = null;
   private idleTimer: number | null = null;
+  private playing = new Map<string, Set<{ src: AudioBufferSourceNode; gain: GainNode }>>();
 
   /** Creates the context and decodes every WAV. Safe to call more than once. */
   preload(): Promise<void> {
@@ -71,6 +72,7 @@ class SoundEngine {
     if (!this.ctx || this.ctx.state !== "running" || this.idleTimer != null) return;
     this.idleTimer = window.setTimeout(() => {
       this.idleTimer = null;
+      if (this.playing.size > 0) return;
       void this.ctx?.suspend();
     }, 1500);
   }
@@ -84,7 +86,8 @@ class SoundEngine {
     this.enabled = on;
   }
 
-  play(name: SoundName | string) {
+  /** `offset` skips into the sound, to stay in sync with an animation that started first. */
+  play(name: SoundName | string, offset = 0) {
     if (!this.enabled) return;
     const ctx = this.ctx;
     const master = this.master;
@@ -97,8 +100,30 @@ class SoundEngine {
     if (ctx.state === "suspended") void ctx.resume();
     const src = ctx.createBufferSource();
     src.buffer = buf;
-    src.connect(master);
-    src.start();
+    const gain = ctx.createGain();
+    src.connect(gain).connect(master);
+    const voice = { src, gain };
+    let voices = this.playing.get(name);
+    if (!voices) this.playing.set(name, (voices = new Set()));
+    voices.add(voice);
+    src.onended = () => {
+      voices.delete(voice);
+      if (voices.size === 0 && this.playing.get(name) === voices) this.playing.delete(name);
+    };
+    src.start(0, Math.max(0, offset));
+  }
+
+  /** Fades out every instance of `name` still playing, then stops it. */
+  fadeOut(name: SoundName | string, seconds: number) {
+    const ctx = this.ctx;
+    const voices = this.playing.get(name);
+    if (!ctx || !voices) return;
+    const now = ctx.currentTime;
+    for (const { src, gain } of voices) {
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      gain.gain.linearRampToValueAtTime(0, now + seconds);
+      src.stop(now + seconds);
+    }
   }
 }
 
