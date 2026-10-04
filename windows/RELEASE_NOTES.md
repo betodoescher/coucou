@@ -1,31 +1,19 @@
 ## ✨ What's new
 
-Mochi now **shows you what your agents change, lets you answer their questions from the island**, and has a whole wardrobe to show off. Plus a brand new hello every time Coucou starts.
+Mochi now **keeps an eye on your Claude plan limits and your GitHub CI**, so you know when to slow down and when your PR is ready to merge.
 
 > [!IMPORTANT]
-> This version listens to more agent events. Open **Settings** and **reinstall the hooks** for Claude Code and Cursor to get questions, file edits and final answers. As always, you see the diff and a backup is made first.
+> Open **Settings** and **reinstall the Claude Code hooks** to see your plan limits (and the Cursor hooks too if you are coming from 0.1.x). As always, you see the diff and a backup is made first.
 
-### ❓ Answer Claude's questions from the island
-- **When Claude Code asks you a multiple-choice question, it shows up as a card.** Pick an option with one click, or tick several and hit **Send** for multi-select questions.
-- **Other…** lets you type your own answer, and **Reply in terminal** hands the question back to Claude Code as usual.
-- Needs Claude Code 2.1.85 or later.
+### ⏱️ Claude's plan limits on the home card
+- **See how much of your 5-hour and weekly Claude limits you have used**, right next to today's tokens. Hover for both windows and when each one resets.
+- Read straight from Claude Code, no extra login. Your own status line keeps working exactly as before: Coucou wraps it and gives it back untouched when you uninstall the hooks.
 
-### 📝 See every file edit, live
-- **Each edit appears in the ticker as `auth.ts +3 −1`**, in green and red, for Claude Code, Cursor and Kiro. Click it to open the diff right in the island.
-- **The agent's final answer** shows up when a turn ends, and the Finished card uses it as its title.
-- **Clearer failures:** a step now says whether the tool was denied, timed out, was interrupted or failed.
-
-### 💬 A nicer chat
-- **Markdown in answers:** bold, lists, headings, quotes, and code blocks with a **Copy** button. Links open in your browser.
-- **The chat no longer shows up as an agent session** when it answers through your Cursor or Kiro plan.
-
-### 👒 Mochi's wardrobe
-- **Right-click Mochi to dress it up:** party hat, beanie, crown, sunglasses, round glasses, bow, scarf, witch hat, pumpkin, Santa hat and bunny ears.
-- Hover to try one on, click to keep it. Accessories bounce and sway as Mochi moves.
-- **Auto follows the seasons:** a party hat for New Year, a witch hat for Halloween, a Santa hat in December, bunny ears at Easter and sunglasses in summer.
-
-### 👋 A new hello
-- **Mochi falls in from the top of your screen**, bounces, waves at you and settles into the island, to its own little tune.
+### 🐙 Your GitHub PRs and their CI
+- **The GitHub card now lists your open PRs with a CI dot:** red when it failed, amber while it runs, green when it passed. Failing CI comes first, then reviews waiting for you.
+- **Know the moment it matters:** a CI that just failed, a broken default branch or a new review request opens the island. **A CI that turns green** badges the pill with a little chime.
+- **Your contribution grid:** the last 7 days sit in the card's header. Click them to see the past 23 weeks, and hover a square for that day's count.
+- Fewer requests to GitHub: one query now replaces the per-repository checks.
 
 ### 🔒 Still private by design
 No telemetry, no account. Keys stay in your system keychain, and the app only talks to the services you turn on.
