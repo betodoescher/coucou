@@ -829,6 +829,105 @@ input[type="range"]::-webkit-slider-thumb {
   user-select: text;
 }
 
+/* Markdown inside a reply */
+.md > * {
+  margin: 0;
+}
+
+.md > * + * {
+  margin-top: 6px;
+}
+
+.md strong {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.md-h {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.md-h1 {
+  font-size: 14px;
+}
+
+.md-h2 {
+  font-size: 13.5px;
+}
+
+.md-h3 {
+  font-size: 13px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+
+.md li + li {
+  margin-top: 2px;
+}
+
+.md blockquote {
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+  padding-left: 8px;
+  color: var(--dim);
+}
+
+.md-code {
+  font: 400 11.5px var(--mono);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: #e8e9ec;
+}
+
+.md-link {
+  color: #8ab4ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.md-pre {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-pre-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.md-copy {
+  border: 0;
+  background: transparent;
+  color: var(--dim-2);
+  font: 500 10.5px var(--font);
+  cursor: default;
+}
+
+.md-copy:hover {
+  color: var(--ink);
+}
+
+.md-pre pre {
+  margin: 0;
+  padding: 6px 8px;
+  font: 400 11.5px var(--mono);
+  color: #e8e9ec;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 .typing {
   display: flex;
   gap: 4px;
