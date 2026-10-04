@@ -723,6 +723,65 @@ body {
   color: var(--dim-2);
 }
 
+/* ── Wardrobe ───────────────────────────────────────────────────────────── */
+
+.wardrobe {
+  padding: 0 12px 0 108px;
+  gap: 10px;
+}
+
+.wardrobe-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wardrobe-title {
+  font: 600 12px var(--font);
+  color: #f5f6f8;
+}
+
+.wardrobe-status {
+  margin-left: auto;
+  font: 400 11px var(--font);
+  color: #8e939c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wardrobe-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.wardrobe-tile {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: default;
+  position: relative;
+}
+
+.wardrobe-tile:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wardrobe-tile.on {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.wardrobe-tile canvas {
+  position: absolute;
+  inset: -1px;
+  width: 30px;
+  height: 30px;
+}
+
 /* ── Settings view (in-island) ──────────────────────────────────────────── */
 
 .settings-rows {
