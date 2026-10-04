@@ -4,24 +4,18 @@
 import { Sound } from "../core/sound";
 import { COMPACT_W, NOTCH_H, NOTCH_W } from "../core/layout";
 
-// ── Timing (mirrors greeting-v2.html `T`) ─────────────────────────────────────
+// ── Timing ────────────────────────────────────────────────────────────────────
 
 const T = {
-  grow: 0.45,
-  squint0: 0.6,
-  squint1: 0.82,
-  dip0: 1.25,
-  dip1: 1.4,
-  pop0: 1.36,
-  pop1: 1.52,
-  content0: 2.45,
-  content1: 2.58,
-  tuck0: 2.58,
-  tuck1: 2.8,
+  pop0: 1.3,
+  pop1: 1.45,
+  content0: 2.4,
+  tuck0: 2.45,
+  tuck1: 2.7,
   badge: 2.72,
   down0: 2.85,
-  down1: 3.2,
-  blink2: 3.8,
+  down1: 3.45,
+  blink2: 3.7,
   tint0: 3.85,
   tint1: 4.15,
   end: 4.6,
@@ -81,51 +75,82 @@ function greetPose(t: number): Pose {
   const iw = lerp(NOTCH_W, 640, g);
   const ih = lerp(NOTCH_H, 150, g);
 
-  const gg = E.back(seg(t, 0.02, T.grow));
-  const hb = lerp(3, HB, gg);
-  let x = C0.x;
-  let y = lerp(16, C0.y, E.out(seg(t, 0.02, T.grow)));
-  let sx = 1;
-  let sy = 1;
-  let tilt = 0;
+  // Falls in from the notch: invisible until 0.20 s, then grows with a back ease.
+  const hb = t < 0.2 ? 0 : lerp(HB * 0.15, HB, E.back(seg(t, 0.2, 0.6)));
 
-  if (t >= T.dip0 && t < T.pop1) {
-    const k = Math.sin(Math.PI * seg(t, T.dip0, T.pop1));
-    y += hb * 0.22 * k;
-    sy = 1 - 0.06 * k;
-    sx = 1 + 0.04 * k;
-  }
-  if (t >= T.pop1 && t < T.tuck1) {
+  const restY = C0.y;
+  const landY = C0.y + 0.12 * HB;
+  const peakY = C0.y - 0.15 * HB;
+  const dipY = C0.y + 0.36 * HB;
+  const springY = C0.y - 0.1 * HB;
+  const sinkY = C0.y + 0.3 * HB;
+
+  const restX = C0.x;
+  const drift1 = C0.x - 0.16 * HB;
+  const drift2 = C0.x - 0.45 * HB;
+  const drift3 = C0.x - 0.57 * HB;
+  const drift4 = C0.x - 0.85 * HB;
+
+  let x: number;
+  if (t < 0.85) x = restX;
+  else if (t < 1.2) x = lerp(restX, drift1, E.inOut(seg(t, 0.85, 1.2)));
+  else if (t < 1.3) x = lerp(drift1, drift2, E.easeIn(seg(t, 1.2, 1.3)));
+  else if (t < 1.45) x = lerp(drift2, drift3, E.inOut(seg(t, 1.3, 1.45)));
+  else if (t < 2.4) x = lerp(drift3, drift4, E.inOut(seg(t, 1.45, 2.4)));
+  else if (t < 2.85) x = drift4;
+  else x = lerp(drift4, restX, E.inOut(seg(t, 2.85, 3.45)));
+
+  let y: number;
+  if (t < 0.2) y = EAR_Y;
+  else if (t < 0.6) y = lerp(EAR_Y, landY, E.easeIn(seg(t, 0.2, 0.6)));
+  else if (t < 0.73) y = lerp(landY, peakY, E.out(seg(t, 0.6, 0.73)));
+  else if (t < 0.9) y = lerp(peakY, restY, E.inOut(seg(t, 0.73, 0.9)));
+  else if (t < 1.2) y = restY;
+  else if (t < 1.3) y = lerp(restY, dipY, E.easeIn(seg(t, 1.2, 1.3)));
+  else if (t < 1.45) y = lerp(dipY, springY, E.out(seg(t, 1.3, 1.45)));
+  else if (t < 1.6) y = lerp(springY, restY, E.inOut(seg(t, 1.45, 1.6)));
+  else if (t < 2.4) y = restY;
+  else if (t < 2.7) y = lerp(restY, sinkY, E.inOut(seg(t, 2.4, 2.7)));
+  else if (t < 2.85) y = sinkY;
+  else y = lerp(sinkY, restY, E.inOut(seg(t, 2.85, 3.45)));
+
+  // Body bob, in phase with the waving hand.
+  if (t >= T.pop1 && t < T.tuck0) {
     const w = t - T.pop1;
-    const fade = 1 - seg(t, T.tuck0, T.tuck1);
-    x += Math.sin(w * 2 * Math.PI * 0.9) * hb * ASP * 0.05 * fade;
-    tilt = Math.sin(w * 2 * Math.PI * 0.9 + 0.6) * 0.05 * fade;
-    y += Math.sin(w * 2 * Math.PI * 1.8) * 0.8 * fade;
+    y += Math.sin(w * 2 * Math.PI * 5) * 0.02 * HB * clamp(w / 0.08, 0, 1);
   }
-  if (t >= T.tuck0 && t < T.down1) {
-    y += hb * 0.12 * Math.sin(Math.PI * seg(t, T.tuck0, T.down1));
-  }
+
+  const pulse = (a: number, b: number) => (t >= a && t < b ? Math.sin(Math.PI * seg(t, a, b)) : 0);
+  const landSq = pulse(0.52, 0.68);
+  const bounce = pulse(0.62, 0.84);
+  const plunge = pulse(1.18, 1.42);
+  const spring = pulse(1.3, 1.46);
+  const sink = t >= 2.38 && t < 2.7
+    ? E.inOut(seg(t, 2.38, 2.7))
+    : t >= 2.7 && t < 2.85 ? 1 - E.inOut(seg(t, 2.7, 2.85)) : 0;
+  const micro = pulse(3.7, 3.82);
+  const sx = 1 + 0.14 * landSq - 0.1 * bounce + 0.12 * plunge - 0.18 * spring + 0.18 * sink + 0.08 * micro;
+  const sy = 1 - 0.14 * landSq + 0.18 * bounce - 0.12 * plunge + 0.25 * spring - 0.14 * sink - 0.07 * micro;
+  const tilt = 0;
 
   let eye: EyeType = "dot";
-  if (t >= T.squint0 && t < T.squint1) eye = "happy";
-  if (t >= T.content0 && t < T.content1) eye = "content";
-  if (t >= T.down0 && t < T.down1) eye = "content";
-  let eyeRoll = 0;
-  if (t >= T.dip0 && t < T.pop1) eyeRoll = Math.sin(Math.PI * seg(t, T.dip0, T.pop1));
+  if (t >= 0.55 && t < 0.8) eye = "happy";
+  if (t >= T.content0 && t < T.tuck1) eye = "content";
+  const eyeRoll = 0;
   const blink = (tb: number) => {
     const k = seg(t, tb, tb + 0.12);
     return k > 0 && k < 1 ? 1 - Math.sin(Math.PI * k) * 0.94 : 1;
   };
-  const open = Math.min(blink(1.95), blink(T.blink2));
+  const open = Math.min(blink(1.95), blink(3.05), blink(T.blink2));
 
   let lookX = 0;
   let lookY = 0;
-  if (t >= T.squint1 && t < T.dip0) lookY = -0.2;
   if (t >= T.pop1 && t < T.content0) { lookX = 0.55; lookY = -0.45; }
-  if (t >= T.content0 && t < T.down1) { lookX = -0.3; lookY = 0.6; }
-  if (t >= T.down1) {
+  else if (t >= T.content0 && t < T.down0) { lookX = -0.3; lookY = 0.6; }
+  else if (t >= T.down0 && t < T.down1) { lookX = 0.3; lookY = 0.6; }
+  else if (t >= T.down1) {
     const k = E.inOut(seg(t, T.down1, T.down1 + 0.35));
-    lookX = lerp(-0.3, 0, k);
+    lookX = lerp(0.3, 0, k);
     lookY = lerp(0.6, 0, k);
   }
 
@@ -205,9 +230,8 @@ function pose(t: number, tc: number): Pose {
 
 // ── Particles (seeded LCG, seed = 7, identical sequence to the Swift version) ──
 
+interface WarpStreak { xNorm: number; speed: number; len: number; thick: number; alpha: number; t0: number }
 interface RingDot { a: number; j: number; s: number; al: number }
-interface Ring { t0: number; dots: RingDot[] }
-interface Streak { a: number; sp: number; len: number; t0: number; col: string }
 
 const PARTICLES = (() => {
   let seed = 7;
@@ -215,24 +239,21 @@ const PARTICLES = (() => {
     seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
     return seed / 0x7fffffff;
   };
-  const rings: Ring[] = [0.1, 0.2, 0.3, 0.45, 0.6].map((t0) => ({
-    t0,
-    dots: Array.from({ length: 170 }, () => ({
-      a: rnd() * Math.PI * 2,
-      j: (rnd() - 0.5) * 0.22,
-      s: 0.7 + rnd() * 0.9,
-      al: 0.45 + rnd() * 0.55,
-    })),
+  const warps: WarpStreak[] = Array.from({ length: 70 }, () => ({
+    xNorm: rnd(),
+    speed: 400 + rnd() * 300,
+    len: 6 + rnd() * 16,
+    thick: 1 + rnd() * 0.5,
+    alpha: 0.25 + rnd() * 0.55,
+    t0: rnd() * 0.35,
   }));
-  const cols = ["#3B9EFF", "#F29B38", "#FF5A4E", "#2EC4A0", "#A78BFA"];
-  const streaks: Streak[] = Array.from({ length: 16 }, (_, i) => ({
-    a: (i / 16) * Math.PI * 2 + (rnd() - 0.5) * 0.3,
-    sp: 230 + rnd() * 260,
-    len: 6 + rnd() * 9,
-    t0: 0.08 + rnd() * 0.14,
-    col: cols[i % 5],
+  const ring: RingDot[] = Array.from({ length: 90 }, () => ({
+    a: rnd() * Math.PI * 2,
+    j: (rnd() - 0.5) * 0.22,
+    s: 0.7 + rnd() * 0.9,
+    al: 0.45 + rnd() * 0.55,
   }));
-  return { rings, streaks };
+  return { warps, ring };
 })();
 
 // ── Drawing ───────────────────────────────────────────────────────────────────
@@ -285,7 +306,12 @@ function drawHandL(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   const r = hb * 0.15 * k;
   const rx = lerp(-hw * 0.35, -hw - hb * 0.22, k);
   let ry = lerp(hh * 0.85, hh * 0.62, k);
-  if (p.wave >= 0) ry += Math.sin(p.wave * 6) * hb * 0.02;
+  if (p.wave >= 0) {
+    const w = p.wave;
+    const rampIn = clamp(w / 0.08, 0, 1);
+    const rampOut = 1 - clamp((w - (T.tuck0 - T.pop1)) / (T.tuck1 - T.tuck0), 0, 1);
+    ry += Math.sin(w * 2 * Math.PI * 5) * hb * 0.14 * rampIn * rampOut;
+  }
   x.save();
   x.translate(rx, ry);
   const circ = new Path2D();
@@ -303,15 +329,9 @@ function drawHandR(x: CanvasRenderingContext2D, hw: number, hh: number, p: Pose)
   const hb = hh * 2;
   const L = hb * 0.4 * k;
   const T2 = hb * 0.22 * k;
-  let rx = lerp(hw * 0.35, hw + hb * 0.2, k);
-  let ry = lerp(hh * 0.85, hh * 0.2, k);
-  let ang = -0.61;
-  if (p.wave >= 0) {
-    const w = p.wave * 2 * Math.PI * 2.5;
-    ang += Math.sin(w) * 0.21;
-    ry += Math.sin(w + 0.8) * hb * 0.04;
-    rx += Math.cos(w) * hb * 0.015;
-  }
+  const rx = lerp(hw * 0.35, hw + hb * 0.2, k);
+  const ry = lerp(hh * 0.85, hh * 0.2, k);
+  const ang = p.wave >= 0 ? -0.61 + Math.sin(p.wave * 2 * Math.PI * 2.5) * 0.04 : -0.61;
   x.save();
   x.translate(rx, ry);
   x.rotate(ang);
@@ -433,30 +453,36 @@ function drawMochi(x: CanvasRenderingContext2D, p: Pose) {
 
 function drawParticles(x: CanvasRenderingContext2D, t: number, p: Pose) {
   if (!(p.card > 0 || p.fx < 1)) return;
-  for (const ring of PARTICLES.rings) {
-    const k = seg(t, ring.t0, ring.t0 + 1.35);
-    if (k <= 0 || k >= 1) continue;
+
+  // Warp streaks while Mochi falls in.
+  if (t < 0.55) {
+    const fadeOut = 1 - seg(t, 0.4, 0.55);
+    x.lineCap = "butt";
+    for (const s of PARTICLES.warps) {
+      if (t < s.t0) continue;
+      const yBot = (t - s.t0) * s.speed;
+      if (yBot <= 0) continue;
+      const sx = 320 - p.iw / 2 + s.xNorm * p.iw;
+      x.strokeStyle = `rgba(255,255,255,${s.alpha * p.fx * fadeOut})`;
+      x.lineWidth = s.thick;
+      x.beginPath();
+      x.moveTo(sx, Math.max(0, yBot - s.len));
+      x.lineTo(sx, Math.min(150, yBot));
+      x.stroke();
+    }
+  }
+
+  // One burst ring as it lands.
+  const k = seg(t, 0.45, 0.45 + 1.35);
+  if (k > 0 && k < 1) {
     const rx = lerp(14, 380, E.out(k));
     const ry = rx * 0.34;
     const fade = (1 - k) * (k < 0.08 ? k / 0.08 : 1) * p.fx * p.card;
-    for (const dot of ring.dots) {
+    for (const dot of PARTICLES.ring) {
       const r = 1 + dot.j;
       x.fillStyle = `rgba(255,255,255,${dot.al * fade})`;
       x.fillRect(C0.x + Math.cos(dot.a) * rx * r, C0.y + Math.sin(dot.a) * ry * r, dot.s, dot.s);
     }
-  }
-  for (const s of PARTICLES.streaks) {
-    const k = seg(t, s.t0, s.t0 + 0.6);
-    if (k <= 0 || k >= 1) continue;
-    const dist = s.sp * E.out(k) * 0.9 + 10;
-    const alpha = (1 - k) * p.fx;
-    x.strokeStyle = s.col + Math.round(alpha * 255).toString(16).padStart(2, "0");
-    x.lineWidth = 1.6;
-    x.lineCap = "round";
-    x.beginPath();
-    x.moveTo(C0.x + Math.cos(s.a) * (dist - s.len), C0.y + Math.sin(s.a) * (dist - s.len) * 0.42);
-    x.lineTo(C0.x + Math.cos(s.a) * dist, C0.y + Math.sin(s.a) * dist * 0.42);
-    x.stroke();
   }
 }
 
@@ -497,11 +523,14 @@ export class Greeting {
     this.tc = Number.POSITIVE_INFINITY;
     this.fired = false;
     this.cancelTimers();
-    this.timers.push(
-      window.setTimeout(() => Sound.play("greet"), T.pop0 * 1000),
-      window.setTimeout(() => Sound.play("blip"), T.badge * 1000),
-      window.setTimeout(() => this.fire(), (T.end + 0.05) * 1000),
-    );
+    const run = this.startMs;
+    Sound.fadeOut("greeting", 0.1);
+    // The score is loaded at boot and may not be decoded yet: start it late, in sync.
+    void Sound.preload().then(() => {
+      if (this.startMs !== run || Number.isFinite(this.tc) || this.elapsed >= T.end) return;
+      Sound.play("greeting", this.elapsed);
+    });
+    this.timers.push(window.setTimeout(() => this.fire(), (T.end + 0.05) * 1000));
   }
 
   /** Mouse entered the island during the greeting — hold it open. */
@@ -514,6 +543,7 @@ export class Greeting {
     const t = (performance.now() - this.startMs) / 1000;
     if (!Number.isFinite(this.tc) || this.tc > t) this.tc = t;
     this.cancelTimers();
+    Sound.fadeOut("greeting", 0.25);
   }
 
   get elapsed(): number {
