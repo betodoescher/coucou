@@ -506,6 +506,81 @@ body {
   }
 }
 
+/* The agent's final message stays still. */
+.ticker.final .shimmer {
+  animation: none;
+  background: none;
+  -webkit-text-fill-color: #c9cdd4;
+}
+
+.ticker-row.edit {
+  cursor: pointer;
+}
+
+.ticker-row.edit:hover .tick-text {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.diff-add {
+  color: #34d399;
+  -webkit-text-fill-color: #34d399;
+}
+
+.diff-del {
+  color: #f4505e;
+  -webkit-text-fill-color: #f4505e;
+}
+
+/* Diff card, in place of the ticker */
+.diff-card {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px 8px 108px;
+  gap: 4px;
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 12px var(--font);
+  color: var(--ink);
+  min-width: 0;
+}
+
+.diff-head .file {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.diff-lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font: 400 10.5px/1.45 var(--mono);
+  white-space: pre;
+  user-select: text;
+}
+
+.diff-lines .add {
+  color: #6ee7b7;
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.diff-lines .del {
+  color: #fda4af;
+  background: rgba(244, 80, 94, 0.1);
+}
+
+.diff-lines .ctx {
+  color: var(--dim-2);
+}
+
 /* ── Agent pills ────────────────────────────────────────────────────────── */
 
 .pills {
@@ -715,6 +790,65 @@ body {
   color: var(--dim-2);
 }
 
+/* ── Wardrobe ───────────────────────────────────────────────────────────── */
+
+.wardrobe {
+  padding: 0 12px 0 108px;
+  gap: 10px;
+}
+
+.wardrobe-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wardrobe-title {
+  font: 600 12px var(--font);
+  color: #f5f6f8;
+}
+
+.wardrobe-status {
+  margin-left: auto;
+  font: 400 11px var(--font);
+  color: #8e939c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wardrobe-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.wardrobe-tile {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: default;
+  position: relative;
+}
+
+.wardrobe-tile:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wardrobe-tile.on {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.wardrobe-tile canvas {
+  position: absolute;
+  inset: -1px;
+  width: 30px;
+  height: 30px;
+}
+
 /* ── Settings view (in-island) ──────────────────────────────────────────── */
 
 .settings-rows {
@@ -894,6 +1028,105 @@ input[type="range"]::-webkit-slider-thumb {
   white-space: pre-wrap;
   padding-right: 8px;
   user-select: text;
+}
+
+/* Markdown inside a reply */
+.md > * {
+  margin: 0;
+}
+
+.md > * + * {
+  margin-top: 6px;
+}
+
+.md strong {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.md-h {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.md-h1 {
+  font-size: 14px;
+}
+
+.md-h2 {
+  font-size: 13.5px;
+}
+
+.md-h3 {
+  font-size: 13px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 18px;
+}
+
+.md li + li {
+  margin-top: 2px;
+}
+
+.md blockquote {
+  border-left: 2px solid rgba(255, 255, 255, 0.2);
+  padding-left: 8px;
+  color: var(--dim);
+}
+
+.md-code {
+  font: 400 11.5px var(--mono);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: #e8e9ec;
+}
+
+.md-link {
+  color: #8ab4ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.md-pre {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.md-pre-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 8px;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.md-copy {
+  border: 0;
+  background: transparent;
+  color: var(--dim-2);
+  font: 500 10.5px var(--font);
+  cursor: default;
+}
+
+.md-copy:hover {
+  color: var(--ink);
+}
+
+.md-pre pre {
+  margin: 0;
+  padding: 6px 8px;
+  font: 400 11.5px var(--mono);
+  color: #e8e9ec;
+  white-space: pre;
+  overflow-x: auto;
 }
 
 .typing {

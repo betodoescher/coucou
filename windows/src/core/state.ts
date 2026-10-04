@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { Worn } from "../mochi/outfits";
 import type { CursorPlan, KiroPlan } from "./bridge";
 
 export type AgentSource = "home" | "n8n" | "agent" | "todos";
@@ -40,6 +41,22 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Recent file edits, referenced by the ticker's edit steps. */
+  edits?: EditInfo[];
+  /** The current step is the agent's final message: shown still, no shimmer. */
+  finalShown?: boolean;
+  /** Cursor sends its answer before `stop`; kept here until then. */
+  lastReply?: string;
+}
+
+/** One file edit as coucou-hook summarised it. */
+export interface EditInfo {
+  id: string;
+  path: string;
+  added: number;
+  removed: number;
+  /** Changed lines, prefixed "+", "-" or " "; "…" between hunks. */
+  lines: string[];
 }
 
 export interface ApprovalInfo {
@@ -136,6 +153,8 @@ export interface Settings {
   islandOffset: [number, number] | null;
   /** City for the home card's weather; empty = no weather. */
   weatherCity: string;
+  /** Mochi's outfit (see mochi/outfits.ts); "auto" follows the seasons. */
+  mochiOutfit: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -157,6 +176,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentApprovals: false,
   islandOffset: null,
   weatherCity: "",
+  mochiOutfit: "auto",
 };
 
 type Listener = () => void;
@@ -189,6 +209,8 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /** The outfit hovered in the wardrobe, worn as a preview until the pointer leaves. */
+  wardrobePreview: Worn | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 

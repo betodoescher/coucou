@@ -43,6 +43,13 @@ pub struct Settings {
     /// City for the home card's weather (Open-Meteo). Empty: no weather, no request.
     #[serde(default)]
     pub weather_city: String,
+    /// Mochi's outfit: "auto" follows the seasons. Same values as macOS.
+    #[serde(default = "default_outfit")]
+    pub mochi_outfit: String,
+}
+
+fn default_outfit() -> String {
+    "auto".into()
 }
 
 fn default_true() -> bool {
@@ -89,6 +96,7 @@ impl Default for Settings {
             agent_approvals: false,
             island_offset: None,
             weather_city: String::new(),
+            mochi_outfit: default_outfit(),
         }
     }
 }
@@ -128,5 +136,13 @@ mod tests {
         json.as_object_mut().unwrap().remove("autoHide");
         let loaded: Settings = serde_json::from_value(json).unwrap();
         assert!(loaded.auto_hide);
+    }
+
+    #[test]
+    fn older_settings_dress_mochi_for_the_seasons() {
+        let mut json = serde_json::to_value(Settings::default()).unwrap();
+        json.as_object_mut().unwrap().remove("mochiOutfit");
+        let loaded: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(loaded.mochi_outfit, "auto");
     }
 }

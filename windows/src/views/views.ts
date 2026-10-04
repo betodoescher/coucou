@@ -5,7 +5,8 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { HOME_ID, State, type AgentTask } from "../core/state";
+import { HOME_ID, State, type AgentTask, type EditInfo } from "../core/state";
+import { baseName, stepPlain } from "../core/steps";
 import { Bridge, type CursorStatus } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
@@ -18,6 +19,8 @@ import {
 import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { homeKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildWardrobe } from "./wardrobe";
+import type { OutfitChoice, Worn } from "../mochi/outfits";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -37,6 +40,10 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  /** Keeps an outfit: saved, and Mochi is proud of it. */
+  wearOutfit(choice: OutfitChoice): void;
+  /** Shows an outfit on Mochi while it is hovered in the wardrobe; null ends it. */
+  previewOutfit(worn: Worn | null): void;
 }
 
 export interface ViewHost {
@@ -142,8 +149,31 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
 // ── Overview ──────────────────────────────────────────────────────────────────
 
+/** One edit, in place of the ticker: the file, its +N −M and the changed lines. */
+function diffCard(edit: EditInfo, onBack: () => void): HTMLElement {
+  const lines = h("div", { class: "diff-lines" });
+  for (const l of edit.lines) {
+    const cls = l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "ctx";
+    lines.append(h("div", { class: cls, text: l || " " }));
+  }
+  return h("div", { class: "diff-card" },
+    h("div", { class: "diff-head" },
+      h("button", { class: "icon-btn", title: "Back", onclick: onBack }, svg(ICONS.chevronLeft, 8, { stroke: 2.4 })),
+      h("span", { class: "file", text: baseName(edit.path), title: edit.path }),
+      h("span", { class: "diff-add", text: `+${edit.added}` }),
+      h("span", { class: "diff-del", text: `−${edit.removed}` }),
+    ),
+    lines,
+  );
+}
+
 function buildOverview(actions: ViewActions): ViewHost {
-  const ticker = new Ticker();
+  let diffId: string | null = null;
+  const ticker = new Ticker((id) => {
+    actions.blip();
+    diffId = id;
+    State.notify();
+  });
   const who = h("div", { class: "who" });
   const tickerBody = h("div", { class: "card-body" }, who, ticker.el);
   const leftBody = h("div", { class: "left-body" });
@@ -166,7 +196,7 @@ function buildOverview(actions: ViewActions): ViewHost {
   let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
-  let mode: "ticker" | "card" | null = null;
+  let mode: "ticker" | "card" | "diff" | null = null;
   let cardKey = "";
 
   const hooks: IntegrationCardHooks = {
@@ -196,13 +226,26 @@ function buildOverview(actions: ViewActions): ViewHost {
       if (task?.id !== lastFocus) {
         lastFocus = task?.id ?? null;
         detailOpen = false;
+        diffId = null;
         cardKey = "";
         mode = null;
       }
 
+      const edit = diffId ? task?.edits?.find((e) => e.id === diffId) : undefined;
+      if (task?.source === "agent" && edit) {
+        if (mode !== "diff" || cardKey !== edit.id) {
+          mode = "diff";
+          cardKey = edit.id;
+          clear(leftBody);
+          leftBody.append(diffCard(edit, () => {
+            diffId = null;
+            State.notify();
+          }));
+        }
       // Agent sessions (Claude Code, Cursor, Kiro) show the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
-      if (task?.source === "agent") {
+      } else if (task?.source === "agent") {
+        diffId = null;
         if (mode !== "ticker") {
           clear(leftBody);
           leftBody.append(tickerBody);
@@ -238,7 +281,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         }
       }
 
-      jump.style.display = detailOpen ? "none" : "";
+      jump.style.display = detailOpen || mode === "diff" ? "none" : "";
 
       const others = State.otherTasks.slice(0, 4);
       const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
@@ -504,7 +547,7 @@ function buildQuestion(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
       const task = State.focusTask;
-      title.textContent = task?.steps.at(-1) ?? "Claude needs an answer.";
+      title.textContent = stepPlain(task, task?.steps.at(-1)) || "Claude needs an answer.";
       clear(row);
       row.append(h("div", { class: "sub", text: "Answer in your terminal — Coucou can't reply for you yet." }));
     },
@@ -529,7 +572,7 @@ function buildError(actions: ViewActions): ViewHost {
       clear(who);
       who.append(agentWho(task, task?.source === "n8n" ? "n8n" : task?.source === "agent" ? "" : "Claude Code"));
       title.textContent = task?.source === "n8n" ? "Workflow stopped." : "Session stopped on an error.";
-      detail.textContent = task?.steps.at(-1) ?? "No detail available.";
+      detail.textContent = stepPlain(task, task?.steps.at(-1)) || "No detail available.";
     },
   };
 }
@@ -549,7 +592,9 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, State.focusTask?.source === "agent" ? "finished" : "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      // A tool failure the agent got past isn't how the turn ended.
+      const last = stepPlain(State.focusTask, State.focusTask?.steps.at(-1));
+      title.textContent = last && !last.startsWith("⚠") ? last : "Session finished";
     },
   };
 }
@@ -705,6 +750,7 @@ export function buildViews(
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));
+  map.set("wardrobe", buildWardrobe(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));

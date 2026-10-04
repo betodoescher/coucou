@@ -38,6 +38,8 @@ const DROPPED_FIELDS: &[&str] = &["tool_response", "tool_output", "transcript_pa
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
 
+mod diff;
+
 #[cfg(windows)]
 mod win;
 #[cfg(windows)]
@@ -51,7 +53,13 @@ use unix::connect;
 /// The event name the app knows a question by.
 const QUESTION_EVENT: &str = "AskUserQuestion";
 
+/// Set by Coucou on the agent CLIs it runs itself (its chat, `/usage`).
+const QUIET_ENV: &str = "COUCOU_QUIET";
+
 fn main() {
+    if std::env::var_os(QUIET_ENV).is_some() {
+        std::process::exit(0);
+    }
     let Some(Event { payload, name: event, agent, questions }) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest" || event == QUESTION_EVENT;
@@ -231,6 +239,7 @@ fn read_event() -> Option<Event> {
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
+    diff::attach(&agent, &event, map);
     let event = if questions.is_some() { QUESTION_EVENT.to_string() } else { normalize(&agent, &event, map) };
     map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
 

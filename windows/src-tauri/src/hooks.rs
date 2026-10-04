@@ -54,6 +54,8 @@ const CURSOR_EVENTS: &[(&str, u64)] = &[
     ("postToolUse", 10),
     ("postToolUseFailure", 10),
     ("beforeShellExecution", 120),
+    ("afterFileEdit", 10),
+    ("afterAgentResponse", 10),
     ("stop", 10),
     ("subagentStart", 10),
     ("subagentStop", 10),
@@ -84,6 +86,19 @@ const MARKER: &str = "coucou-hook";
 /// picked on the island (Claude Code 2.1.85+).
 const QUESTION_TOOL: &str = "AskUserQuestion";
 const QUESTION_TIMEOUT: u64 = 120;
+
+/// Set on the agent CLIs Coucou runs itself (chat, `/usage`): their hooks
+/// still fire, and coucou-hook stays silent rather than report them as sessions.
+pub const QUIET_ENV: &str = "COUCOU_QUIET";
+
+/// Coucou's own working folders for those CLIs, for agents that do not pass
+/// the environment on to their hooks.
+pub fn is_own_workdir(cwd: &str) -> bool {
+    let cwd = Path::new(cwd);
+    ["cursor-chat", "cursor-usage", "kiro-chat", "kiro-usage"]
+        .iter()
+        .any(|d| cwd.starts_with(settings::local_dir().join(d)))
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -374,10 +389,13 @@ pub fn status(t: Target) -> HookStatus {
             .unwrap_or(false),
     };
     let outdated = installed
-        && t == Target::Claude
-        && !current["hooks"]["PreToolUse"]
-            .as_array()
-            .is_some_and(|list| list.iter().any(is_question_entry));
+        && t != Target::Kiro
+        && (events(t).iter().any(|(event, _)| {
+            !current["hooks"][*event].as_array().is_some_and(|list| list.iter().any(entry_is_ours))
+        }) || t == Target::Claude
+            && !current["hooks"]["PreToolUse"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(is_question_entry)));
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,

@@ -113,7 +113,7 @@ function hookSection(status: HookStatus, target: HookTarget = "claude"): HTMLEle
     if (status.outdated) {
       body.append(h("div", {
         class: "notice warn",
-        text: "Reinstall the hooks to answer Claude's questions from the island (Claude Code 2.1.85 or later).",
+        text: "This version listens to more events. Reinstall the hooks to see file edits, the agent's final answer and Claude's questions in the island.",
       }));
     }
 

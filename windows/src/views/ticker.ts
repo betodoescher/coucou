@@ -11,6 +11,7 @@ import { h, svg } from "./dom";
 import { ICONS } from "./icons";
 import { cubicBezier, clamp, lerp } from "../core/anim";
 import type { AgentTask } from "../core/state";
+import { EDIT_MARK, baseName, editOf } from "../core/steps";
 
 const ROW_H = 22;
 /** One step transition, milliseconds. */
@@ -49,11 +50,29 @@ function makeRow(): Row {
   return { el, chevron, check, shimmer, dim, text: "" };
 }
 
+/** The task whose steps are on screen, for drawing edit steps. */
+let shown: AgentTask | null = null;
+
+function fill(el: HTMLElement, text: string) {
+  const edit = editOf(shown, text);
+  if (!edit) {
+    el.textContent = text.startsWith(EDIT_MARK) ? "Edit" : text;
+    return;
+  }
+  el.replaceChildren(
+    `${baseName(edit.path)} `,
+    h("span", { class: "diff-add", text: `+${edit.added}` }),
+    " ",
+    h("span", { class: "diff-del", text: `−${edit.removed}` }),
+  );
+}
+
 function setText(row: Row, text: string) {
   if (row.text === text) return;
   row.text = text;
-  row.shimmer.textContent = text;
-  row.dim.textContent = text;
+  fill(row.shimmer, text);
+  fill(row.dim, text);
+  row.el.classList.toggle("edit", text.startsWith(EDIT_MARK));
 }
 
 /**
@@ -79,8 +98,14 @@ export class Ticker {
   private startMs: number | null = null;
   private displayIndex = -1;
 
-  constructor() {
+  /** `onEdit` gets the id of an edit step that was clicked. */
+  constructor(onEdit: (id: string) => void) {
     this.el = h("div", { class: "ticker" }, this.a.el, this.b.el, this.c.el);
+    for (const row of [this.a, this.b]) {
+      row.el.addEventListener("click", () => {
+        if (row.text.startsWith(EDIT_MARK)) onEdit(row.text.slice(EDIT_MARK.length));
+      });
+    }
     this.rest();
   }
 
@@ -96,8 +121,10 @@ export class Ticker {
   }
 
   sync(task: AgentTask | null) {
+    shown = task;
     const steps = task && task.steps.length > 0 ? task.steps : ["…"];
     const idx = task ? Math.min(task.stepIndex, steps.length - 1) : -1;
+    this.el.classList.toggle("final", !!task?.finalShown);
 
     // First render: drop straight into place, no animation.
     if (this.displayIndex < 0) {
@@ -116,6 +143,13 @@ export class Ticker {
       setText(this.a, idx > 0 ? steps[idx - 1] : "…");
       setText(this.b, steps[Math.max(idx, 0)]);
       this.rest();
+      return;
+    }
+
+    // A step can change in place (a tool step becoming its edit).
+    if (idx === this.displayIndex && !this.animating) {
+      setText(this.a, idx > 0 ? steps[idx - 1] : "…");
+      setText(this.b, steps[Math.max(idx, 0)]);
       return;
     }
 
