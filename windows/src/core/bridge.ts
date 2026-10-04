@@ -103,6 +103,9 @@ export const Bridge = {
 
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
+  /** Answers to a Claude Code question: a label, or labels for a multi-select, per question text. */
+  questionAnswer: (requestId: string, answers: Record<string, string | string[]>) =>
+    call<void>("question_answer", { requestId, answers }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */
@@ -175,7 +178,7 @@ export type HookTarget = "claude" | "cursor" | "kiro";
 
 export interface HookStatus {
   installed: boolean;
-  /** Installed, but missing an event this version listens to. */
+  /** Installed, but missing an entry this version adds. */
   outdated: boolean;
   settingsPath: string;
   hookPath: string;

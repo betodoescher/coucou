@@ -31,6 +31,10 @@ export interface ViewActions {
   openTarget(): void;
   openUrl(url: string): void;
   decide(d: "allow" | "deny"): void;
+  /** Answers per question text: a label, or labels for a multi-select. */
+  answerQuestion(answers: Record<string, string | string[]>): void;
+  /** Hands the pending question back to the terminal. */
+  replyInTerminal(): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -445,14 +449,101 @@ function buildApproval(actions: ViewActions): ViewHost {
 
 // ── Question ──────────────────────────────────────────────────────────────────
 
-function buildQuestion(): ViewHost {
+function buildQuestion(actions: ViewActions): ViewHost {
   const who = h("div");
   const title = h("div", { class: "title" });
   const row = h("div", { class: "actions" });
   const el = h("div", { class: "view" }, card("cyan", stack(116, 16, who, title, row)));
+
+  // A question with options: one at a time, answers kept until the last one.
+  let requestId = "";
+  let index = 0;
+  let picked: string[][] = [];
+  const other = h("input", { class: "ask-other", type: "text", placeholder: "Other…", spellcheck: "false" }) as HTMLInputElement;
+
+  const submit = () => {
+    const qs = State.pendingApproval?.questions ?? [];
+    const answers: Record<string, string | string[]> = {};
+    qs.forEach((q, i) => {
+      const labels = picked[i] ?? [];
+      if (labels.length) answers[q.question] = q.multiSelect ? labels : labels[0];
+    });
+    actions.answerQuestion(answers);
+  };
+  /** Records the current question's answer and moves on, or sends them all. */
+  const next = () => {
+    const typed = other.value.trim();
+    const q = State.pendingApproval?.questions?.[index];
+    if (!q) return;
+    if (typed) picked[index] = q.multiSelect ? [...(picked[index] ?? []), typed] : [typed];
+    if (!(picked[index]?.length)) return;
+    other.value = "";
+    if (index + 1 < (State.pendingApproval?.questions?.length ?? 0)) {
+      index++;
+      render();
+    } else {
+      submit();
+    }
+  };
+  other.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") next();
+  });
+
+  function render() {
+    const qs = State.pendingApproval?.questions;
+    if (!qs) return;
+    const q = qs[index];
+    clear(who);
+    const count = qs.length > 1 ? ` · ${index + 1}/${qs.length}` : "";
+    who.append(agentWho(State.focusTask, `${q.header || "asks"}${count}`));
+    title.textContent = q.question;
+    title.className = "title ask-q";
+    title.title = q.question;
+    clear(row);
+    const opts = h("div", { class: "ask-opts" });
+    for (const o of q.options) {
+      const on = picked[index]?.includes(o.label) ?? false;
+      const b = h("button", { class: `btn secondary ask-opt${on ? " on" : ""}`, text: o.label });
+      if (o.description) b.title = o.description;
+      b.addEventListener("click", () => {
+        if (q.multiSelect) {
+          const cur = picked[index] ?? [];
+          picked[index] = cur.includes(o.label) ? cur.filter((l) => l !== o.label) : [...cur, o.label];
+          render();
+        } else {
+          picked[index] = [o.label];
+          next();
+        }
+      });
+      opts.append(b);
+    }
+    const last = index + 1 === qs.length;
+    const foot = h("div", { class: "ask-foot" }, other);
+    if (q.multiSelect) foot.append(btn(last ? "Send" : "Next", "primary", next));
+    foot.append(h("div", { class: "grow" }), h("button", {
+      class: "link-btn ask-terminal",
+      text: "Reply in terminal",
+      onclick: () => actions.replyInTerminal(),
+    }));
+    row.append(h("div", { class: "ask-body" }, opts, foot));
+  }
+
   return {
     el,
     sync() {
+      const req = State.pendingApproval;
+      if (req?.questions) {
+        if (req.requestId === requestId) return;
+        requestId = req.requestId;
+        index = 0;
+        picked = [];
+        other.value = "";
+        render();
+        return;
+      }
+      requestId = "";
+      title.className = "title";
+      title.removeAttribute("title");
       clear(who);
       who.append(agentWho(State.focusTask, "Claude Code is asking a question"));
       const task = State.focusTask;
@@ -648,7 +739,7 @@ export function buildViews(
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
   map.set("approval", buildApproval(actions));
-  map.set("question", buildQuestion());
+  map.set("question", buildQuestion(actions));
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));
   map.set("confused", buildConfused());

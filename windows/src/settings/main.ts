@@ -113,7 +113,7 @@ function hookSection(status: HookStatus, target: HookTarget = "claude"): HTMLEle
     if (status.outdated) {
       body.append(h("div", {
         class: "notice warn",
-        text: "This version listens to more events. Reinstall the hooks to see file edits and the agent's final answer in the island.",
+        text: "This version listens to more events. Reinstall the hooks to see file edits, the agent's final answer and Claude's questions in the island.",
       }));
     }
 

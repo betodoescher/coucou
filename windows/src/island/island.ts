@@ -161,12 +161,21 @@ export class Island {
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = false;
-        State.updateTask(req.taskId, "working");
-        State.setPillBadge(req.taskId, null);
-        this.setView(State.defaultView());
+        this.releaseCard();
+      },
+      answerQuestion: (answers) => {
+        const req = State.pendingApproval;
+        if (!req?.questions) return;
+        Sound.play("approve");
+        void Bridge.questionAnswer(req.requestId, answers);
+        this.releaseCard();
+      },
+      replyInTerminal: () => {
+        const req = State.pendingApproval;
+        if (!req) return;
+        Sound.play("blip");
+        void Bridge.approvalDecline(req.requestId);
+        this.releaseCard();
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -486,7 +495,10 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const count = State.view === "todos" ? todayRowCount() : State.chatHistory.length;
+    const count =
+      State.view === "todos" ? todayRowCount()
+      : State.view === "question" ? (State.pendingApproval?.questions ? 1 : 0)
+      : State.chatHistory.length;
     const { w, h } = islandSize(State.mode, State.view, count);
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
@@ -980,6 +992,18 @@ export class Island {
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);
+  }
+
+  /** The pending permission or question was answered: back to work. */
+  private releaseCard() {
+    const req = State.pendingApproval;
+    if (!req) return;
+    State.pendingApproval = null;
+    State.isPinned = false;
+    this.fsm.pinned = false;
+    State.updateTask(req.taskId, "working");
+    State.setPillBadge(req.taskId, null);
+    this.setView(State.defaultView());
   }
 
   /** Lets the open island be dragged by its background. */

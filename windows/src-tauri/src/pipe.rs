@@ -202,7 +202,7 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         return;
     }
 
-    if event != "PermissionRequest" {
+    if event != "PermissionRequest" && event != "AskUserQuestion" {
         log::line(format!("hook {event}"));
         let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
         pipe.finish();
@@ -216,7 +216,7 @@ async fn handle(app: AppHandle, mut pipe: impl Relay) {
         pending.0.lock().unwrap().insert(id.clone(), tx);
     }
     payload["request_id"] = json!(id);
-    log::line(format!("hook PermissionRequest id={id}"));
+    log::line(format!("hook {event} id={id}"));
     let _ = app.emit_to(WINDOW_LABEL, "hook", payload);
 
     let decision = wait_for_decision(&id, &mut rx).await;
@@ -301,4 +301,15 @@ pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
     };
     log::line(format!("decision id={request_id} {word}"));
     send(app, request_id, Reply::Decision(word.to_string()), false);
+}
+
+/// The island's answers to a question, keyed by question text. One line of
+/// JSON; coucou-hook turns it into the tool's updated input.
+pub fn answer_question(app: &AppHandle, request_id: &str, answers: Value) {
+    if !answers.as_object().is_some_and(|a| !a.is_empty()) {
+        decline(app, request_id);
+        return;
+    }
+    log::line(format!("answers id={request_id}"));
+    send(app, request_id, Reply::Decision(json!({ "answers": answers }).to_string()), false);
 }

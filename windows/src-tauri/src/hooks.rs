@@ -82,6 +82,11 @@ fn events(t: Target) -> &'static [(&'static str, u64)] {
 /// Marker that identifies a Coucou entry inside settings.json.
 const MARKER: &str = "coucou-hook";
 
+/// Claude Code's question tool. Its own PreToolUse entry waits for the answer
+/// picked on the island (Claude Code 2.1.85+).
+const QUESTION_TOOL: &str = "AskUserQuestion";
+const QUESTION_TIMEOUT: u64 = 120;
+
 /// Set on the agent CLIs Coucou runs itself (chat, `/usage`): their hooks
 /// still fire, and coucou-hook stays silent rather than report them as sessions.
 pub const QUIET_ENV: &str = "COUCOU_QUIET";
@@ -99,7 +104,7 @@ pub fn is_own_workdir(cwd: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct HookStatus {
     pub installed: bool,
-    /// Installed, but missing an event this version listens to: reinstalling fixes it.
+    /// Installed, but missing an entry this version adds: reinstalling fixes it.
     pub outdated: bool,
     pub settings_path: String,
     pub hook_path: String,
@@ -177,18 +182,37 @@ fn agent_flag(t: Target) -> &'static str {
     }
 }
 
-#[cfg(windows)]
 fn hook_command(t: Target, event: &str) -> String {
-    let exe = settings::hook_exe_path().to_string_lossy().replace('\\', "/");
-    format!("\"{exe}\" {}{event}", agent_flag(t))
+    format!("{} {}{event}", quoted_exe(), agent_flag(t))
+}
+
+#[cfg(windows)]
+fn quoted_exe() -> String {
+    format!("\"{}\"", settings::hook_exe_path().to_string_lossy().replace('\\', "/"))
 }
 
 /// Claude Code runs the command through `sh`, which still reads `$`, `` ` ``
 /// and `\` inside double quotes. Single quotes keep the path a path, whatever
 /// the home directory is called.
 #[cfg(unix)]
-fn hook_command(t: Target, event: &str) -> String {
-    format!("{} {}{event}", sh_quote(&settings::hook_exe_path().to_string_lossy()), agent_flag(t))
+fn quoted_exe() -> String {
+    sh_quote(&settings::hook_exe_path().to_string_lossy())
+}
+
+/// Claude Code's PreToolUse entry for its question tool.
+fn question_entry() -> Value {
+    json!({
+        "matcher": QUESTION_TOOL,
+        "hooks": [{
+            "type": "command",
+            "command": format!("{} --ask PreToolUse", quoted_exe()),
+            "timeout": QUESTION_TIMEOUT,
+        }]
+    })
+}
+
+fn is_question_entry(entry: &Value) -> bool {
+    entry.get("matcher").and_then(Value::as_str) == Some(QUESTION_TOOL) && entry_is_ours(entry)
 }
 
 /// `s` as one single-quoted shell word: `'` becomes `'\''`, nothing else is
@@ -261,6 +285,9 @@ fn merged(t: Target, existing: &Value) -> Value {
                 }]
             }),
         });
+        if t == Target::Claude && *event == "PreToolUse" {
+            list.push(question_entry());
+        }
         hooks.insert((*event).to_string(), Value::Array(list));
     }
 
@@ -363,9 +390,12 @@ pub fn status(t: Target) -> HookStatus {
     };
     let outdated = installed
         && t != Target::Kiro
-        && events(t).iter().any(|(event, _)| {
+        && (events(t).iter().any(|(event, _)| {
             !current["hooks"][*event].as_array().is_some_and(|list| list.iter().any(entry_is_ours))
-        });
+        }) || t == Target::Claude
+            && !current["hooks"]["PreToolUse"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(is_question_entry)));
     let hook_path = settings::hook_exe_path();
     HookStatus {
         installed,
@@ -696,6 +726,14 @@ mod tests {
             "another tool's hook was dropped"
         );
         assert!(pre.iter().any(entry_is_ours), "our own hook was not added");
+        let ask = pre.iter().find(|e| is_question_entry(e)).expect("the question hook was not added");
+        assert!(ask["hooks"][0]["command"].as_str().unwrap().ends_with("--ask PreToolUse"));
+        assert_eq!(ask["hooks"][0]["timeout"], QUESTION_TIMEOUT);
+        assert_eq!(
+            merged(Target::Claude, &after)["hooks"]["PreToolUse"].as_array().unwrap().len(),
+            pre.len(),
+            "merging twice duplicated an entry"
+        );
         assert!(after["hooks"]["SomeEventWeDoNotTouch"].is_array());
         assert!(!after.to_string().contains("--agent"), "Claude commands carry no agent flag");
 

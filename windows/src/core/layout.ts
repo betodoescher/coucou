@@ -107,7 +107,10 @@ export function todosHeight(rows: number): number {
   return Math.min(300, 150 + Math.max(1, rows) * 28);
 }
 
-/** `count` is the chat's messages, or the to-do view's rows. */
+/** The question card with options to pick from; without them it keeps its usual height. */
+export const ASK_HEIGHT = 214;
+
+/** `count` is the chat's messages, the to-do view's rows, or 1 for a question with options. */
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
@@ -124,6 +127,7 @@ export function islandSize(
       const h =
         view === "prompt" ? chatPromptHeight(count)
         : view === "todos" ? todosHeight(count)
+        : view === "question" && count > 0 ? ASK_HEIGHT
         : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
