@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { Worn } from "../mochi/outfits";
 import type { CursorPlan, KiroPlan } from "./bridge";
 
 export type AgentSource = "home" | "n8n" | "agent" | "todos";
@@ -126,6 +127,8 @@ export interface Settings {
   islandOffset: [number, number] | null;
   /** City for the home card's weather; empty = no weather. */
   weatherCity: string;
+  /** Mochi's outfit (see mochi/outfits.ts); "auto" follows the seasons. */
+  mochiOutfit: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -147,6 +150,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentApprovals: false,
   islandOffset: null,
   weatherCity: "",
+  mochiOutfit: "auto",
 };
 
 type Listener = () => void;
@@ -179,6 +183,8 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /** The outfit hovered in the wardrobe, worn as a preview until the pointer leaves. */
+  wardrobePreview: Worn | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 

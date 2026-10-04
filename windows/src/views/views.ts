@@ -18,6 +18,8 @@ import {
 import { Sound } from "../core/sound";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { homeKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildWardrobe } from "./wardrobe";
+import type { OutfitChoice, Worn } from "../mochi/outfits";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -33,6 +35,10 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  /** Keeps an outfit: saved, and Mochi is proud of it. */
+  wearOutfit(choice: OutfitChoice): void;
+  /** Shows an outfit on Mochi while it is hovered in the wardrobe; null ends it. */
+  previewOutfit(worn: Worn | null): void;
 }
 
 export interface ViewHost {
@@ -614,6 +620,7 @@ export function buildViews(
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));
+  map.set("wardrobe", buildWardrobe(actions));
   // Not in the Windows v1: sending a file by email, window attach + web result.
   map.set("mail", buildPlaceholder("Sending by email isn't in this version.", ""));
   map.set("searching", buildPlaceholder("Claude is searching…", ""));
