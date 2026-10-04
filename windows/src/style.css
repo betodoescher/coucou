@@ -710,6 +710,19 @@ body {
   gap: 5px;
 }
 
+/* A long final message would push the agent's name and the buttons out of the card. */
+.clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Mochi is on the desktop and stays there for these cards. */
+body.bot-away .stack.bot-slot {
+  padding-left: 24px !important;
+}
+
 .actions {
   display: flex;
   gap: 8px;

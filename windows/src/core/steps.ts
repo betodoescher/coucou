@@ -28,6 +28,19 @@ export function stepPlain(task: AgentTask | null | undefined, step: string | und
 }
 
 /**
+ * Cursor hands over its answer with the text blocks run together, so
+ * "…to finish." and "CI is green…" arrive as "…to finish.CI is green…". Puts
+ * the space back where a sentence ends against a capitalised word, leaving
+ * inline code (`React.Component`) alone.
+ */
+export function unjoinSentences(text: string): string {
+  return text
+    .split(/(`[^`\n]*`)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/([\p{Ll}\d)][.!?:])(?=\p{Lu})/gu, "$1 ")))
+    .join("");
+}
+
+/**
  * An agent's last message as one line: its first real paragraph, without the
  * Markdown, whitespace collapsed.
  */

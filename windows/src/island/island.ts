@@ -1043,6 +1043,7 @@ export class Island {
   private syncDesktop() {
     if (!State.desktop.available) return;
     const state = State.effectiveState;
+    document.body.classList.toggle("bot-away", this.botAway);
 
     if (this.botAway) {
       const inWardrobe = State.mode === "expanded" && State.view === "wardrobe";
