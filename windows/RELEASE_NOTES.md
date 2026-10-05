@@ -1,23 +1,28 @@
 ## ✨ What's new
 
-Mochi can now **leave the island and live on your desktop**, and **Open terminal takes you straight back to the app your session runs in**.
+Coucou now **answers to your keyboard**: open the chat, jump to the waiting permission or bring your agent's window forward from any app, without reaching for the mouse.
 
-### 🖥️ Mochi on the desktop
-- **Drag Mochi out of the island** and drop him anywhere on your screen. He stays on top, out of your way.
-- **Click to poke him, right-click for the wardrobe**, drag to move him. Double-click him, or drop him back on the island, to send him home.
-- **He remembers his spot** and flies back out after the hello every time Coucou starts.
-- **When an agent needs you, he looks surprised and flies into the island** with the permission or question card, then flies back once you have answered.
-- **He jumps for joy when a task finishes**, and naps after two quiet minutes when your mouse is away.
-- On Windows, and on Linux where Coucou can place its windows (GNOME, X11).
+### ⌨️ Shortcuts from anywhere
+- **`Ctrl+Shift+Alt` plus one key**, from any app:
 
-### ↗️ Open terminal finds your session
-- **Open terminal now brings back the window your agent runs in**: Windows Terminal, VS Code, Cursor, Orca… instead of always opening VS Code.
-- On Linux this works for VS Code, Cursor, Orca and other Electron apps. Other terminals still open the folder in VS Code.
+| Keys | What happens |
+|---|---|
+| `Space` | Opens the chat |
+| `A` | Goes to the waiting permission or question |
+| `T` | Brings the agent's window forward |
+| `]` / `[` | Next / previous pill |
+| `M` | Mutes or unmutes Mochi |
+| `D` | Sends Mochi to the desktop and back |
+| `G` | Opens or closes the wardrobe |
 
-### 🧹 Fixes
-- **Cursor's final answer no longer runs its sentences together** on the Finished card, and a long answer no longer pushes the buttons out of the card.
-- **The Finished and error cards use Mochi's spot** while he is on the desktop.
-- **Settings:** the Cursor and Kiro model pickers fit their section, Cursor's models read "Auto (default)", and on Linux the pickers match the other fields.
+- **Open / close the island** gets a shortcut too, once you give it a key.
+
+### 🏝️ Inside the open island
+- **`Ctrl+←` / `Ctrl+→` and `Ctrl+1`–`Ctrl+9`** switch pills, **`Ctrl+E`** opens the latest diff, **`Ctrl+K`** starts a new conversation, **`Ctrl+,`** opens Settings and **`Ctrl+P`** pins the island.
+
+### ⚙️ Settings → Shortcuts
+- **Pick another modifier, record your own key for each action, or turn any of them off.** Coucou warns you when two actions share a key or another app already took it, and **Reset** brings the defaults back.
+- **On Linux with Wayland** (GNOME, KDE Plasma…), the desktop asks once to allow the shortcuts and keeps them in its own keyboard settings. On X11 Coucou grabs the keys itself.
 
 ### 🔒 Still private by design
 No telemetry, no account. Keys stay in your system keychain, and the app only talks to the services you turn on.
