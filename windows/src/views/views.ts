@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { HOME_ID, State, type AgentTask, type EditInfo } from "../core/state";
+import { HOME_ID, State, TODO_PILL_ID, type AgentTask, type EditInfo } from "../core/state";
 import { baseName, stepPlain } from "../core/steps";
 import { Bridge, type CursorStatus } from "../core/bridge";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
@@ -13,10 +13,7 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildToday } from "./today";
 import { Todos } from "../core/todoStore";
-import {
-  PRIORITY_COLORS, dayOf, dueCount, isOverdue, toggleTodo, upNext, whenLabel, type TodoItem,
-} from "../core/todos";
-import { Sound } from "../core/sound";
+import { dayOf, dueCount } from "../core/todos";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { homeKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildWardrobe } from "./wardrobe";
@@ -95,6 +92,10 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
+/** A header pill's width plus the gap after it, as in `.header-pills`. */
+const PILL_W = 34;
+const PILL_GAP = 5;
+
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h("button", { class: "tab", title: "Overview", onclick: () => go("overview") }, svg(ICONS.house, 13));
   const tabChat = h("button", { class: "tab", title: "Ask", onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
@@ -120,16 +121,82 @@ export function buildHeader(actions: ViewActions): ViewHost {
     actions.setView(v);
   }
 
+  const pillBar = h("div", { class: "header-pills" });
+  const moreMenu = h("div", { class: "pill-menu" });
+  let pillKey = "";
+  let hidden: AgentTask[] = [];
+
+  function closeMenu() {
+    moreMenu.classList.remove("on");
+  }
+
+  function pick(task: AgentTask) {
+    closeMenu();
+    actions.setFocus(task.id);
+    if (task.id !== TODO_PILL_ID && State.view !== "overview") actions.setView("overview");
+  }
+
+  const moreBtn = h("button", {
+    class: "pill-more",
+    onclick: (e: Event) => {
+      e.stopPropagation();
+      if (moreMenu.classList.contains("on")) return closeMenu();
+      clear(moreMenu);
+      for (const t of hidden) {
+        moreMenu.append(h(
+          "button",
+          { class: "pill-menu-row", onclick: () => pick(t) },
+          createMiniBot(t, 14),
+          h("span", { text: t.name }),
+        ));
+      }
+      moreMenu.classList.add("on");
+    },
+  });
+  document.addEventListener("click", (e) => {
+    if (!moreMenu.contains(e.target as Node)) closeMenu();
+  });
+
   const el = h(
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabTodos, tabDrop),
+    pillBar,
     h("div", { class: "header-actions" }, gearBtn, soundBtn, collapseBtn),
+    moreMenu,
   );
+
+  function syncPills() {
+    const tasks = State.otherTasks;
+    const css = getComputedStyle(pillBar);
+    const inner = pillBar.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+    const width = inner > 0 ? inner : 6 * (PILL_W + PILL_GAP);
+    const fit = Math.max(1, Math.floor((width + PILL_GAP) / (PILL_W + PILL_GAP)));
+    const shown = tasks.length > fit ? tasks.slice(0, fit - 1) : tasks;
+    hidden = tasks.slice(shown.length);
+    const key = `${fit}#` + tasks.map((t) => `${t.id}:${t.name}:${t.pillBadge ?? ""}`).join("|");
+    if (key === pillKey) return;
+    pillKey = key;
+    clear(pillBar);
+    for (const t of shown) pillBar.append(buildPill(t, () => pick(t)));
+    if (hidden.length) {
+      moreBtn.textContent = `+${hidden.length}`;
+      moreBtn.title = hidden.map((t) => t.name).join(", ");
+      pillBar.append(moreBtn);
+    } else {
+      closeMenu();
+    }
+    pruneMiniBots();
+  }
+
+  // The island's width animates frame by frame while it opens.
+  new ResizeObserver(() => syncPills()).observe(pillBar);
 
   return {
     el,
     sync() {
+      syncPills();
+      if (State.mode !== "expanded") closeMenu();
       const v = State.view;
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
@@ -181,18 +248,8 @@ function buildOverview(actions: ViewActions): ViewHost {
     { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
-  const left = card(null, leftBody, jump);
-  const pills = h("div", { class: "pills" });
-  const upNextBox = h("div", { class: "up-next" });
-  const right = card(null, pills, upNextBox);
-  let upNextKey = "";
+  const el = h("div", { class: "view overview" }, card(null, leftBody, jump));
 
-  const el = h("div", { class: "view overview" },
-    h("div", { class: "left" }, left),
-    h("div", { class: "right" }, right),
-  );
-
-  let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | "diff" | null = null;
@@ -281,101 +338,22 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
 
       jump.style.display = detailOpen || mode === "diff" ? "none" : "";
-
-      const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
-      if (pillKey !== pillIds) {
-        pillIds = pillKey;
-        clear(pills);
-        for (const t of others) pills.append(buildPill(t, actions));
-        pruneMiniBots();
-      }
-
-      // With no other agent to show, the card lists the next tasks instead.
-      const showTasks = others.every((t) => t.source === "todos");
-      pills.style.display = showTasks ? "none" : "";
-      upNextBox.style.display = showTasks ? "" : "none";
-      if (showTasks) {
-        const now = new Date();
-        const today = dayOf(now);
-        const next = upNext(Todos.doc, 3);
-        const key = `${today}|${dueCount(Todos.doc, today)}|${JSON.stringify(next)}`;
-        if (key !== upNextKey) {
-          upNextKey = key;
-          clear(upNextBox);
-          upNextBox.append(buildUpNext(next, today, now, actions));
-        }
-      }
     },
   };
 }
 
-function buildUpNext(next: TodoItem[], today: string, now: Date, actions: ViewActions): DocumentFragment {
-  const due = dueCount(Todos.doc, today);
-  const open = () => {
-    actions.blip();
-    State.todayTab = "tasks";
-    actions.setView("todos");
-  };
-  const frag = document.createDocumentFragment();
-  frag.append(
-    h(
-      "button",
-      { class: "up-next-head", title: "Open tasks", onclick: open },
-      svg(ICONS.checklist, 12, { stroke: 1.8 }),
-      h("span", { text: "Tasks" }),
-      due ? h("span", { class: "tab-count", text: String(Math.min(due, 99)) }) : null,
-      h("div", { class: "grow" }),
-      svg(ICONS.arrowUpRight, 8),
-    ),
-  );
-  if (next.length === 0) {
-    frag.append(h("div", { class: "up-next-empty", text: "All clear. Add a task from the ✓ tab." }));
-  }
-  for (const item of next) {
-    frag.append(
-      h(
-        "div",
-        { class: "up-next-row" },
-        h("button", {
-          class: "todo-check",
-          title: "Done",
-          style: `border-color:${item.priority ? PRIORITY_COLORS[item.priority] : "var(--dim-3)"}`,
-          onclick: () => {
-            Sound.play("pop");
-            void Todos.commit(toggleTodo(Todos.doc, item.id, new Date()));
-          },
-        }),
-        h("button", { class: "todo-title", text: item.title, title: "Open tasks", onclick: open }),
-        item.due
-          ? h("span", { class: isOverdue(item, today) ? "todo-due late" : "todo-due", text: whenLabel(item, now) })
-          : null,
-      ),
-    );
-  }
-  return frag;
-}
-
-function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const canvas = createMiniBot(task, 24);
-  const pill = h(
-    "div",
-    { class: "pill", onclick: () => actions.setFocus(task.id) },
-    canvas,
-    h("span", { class: "lbl", text: task.name }),
-  );
+function buildPill(task: AgentTask, onClick: () => void): HTMLElement {
+  const pill = h("button", { class: "pill", title: task.name, onclick: onClick }, createMiniBot(task, 14));
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;
     pill.style.borderColor = `${task.color}8c`;
     pill.style.boxShadow = `0 2px 10px ${task.color}59`;
-    (pill.querySelector(".lbl") as HTMLElement).style.color = lighten(task.color, 0.3);
   });
   pill.addEventListener("mouseleave", () => {
     pill.style.background = "";
     pill.style.borderColor = `${task.color}24`;
     pill.style.boxShadow = "";
-    (pill.querySelector(".lbl") as HTMLElement).style.color = "";
   });
 
   if (task.pillBadge) {
@@ -387,14 +365,6 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
     pill.append(badge);
   }
   return pill;
-}
-
-function lighten(hex: string, amount: number): string {
-  const v = parseInt(hex.replace("#", ""), 16);
-  const c = [(v >> 16) & 255, (v >> 8) & 255, v & 255].map((x) =>
-    Math.min(255, Math.round(x + amount * 255)),
-  );
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
 // ── Empty ─────────────────────────────────────────────────────────────────────
