@@ -1,28 +1,14 @@
 ## ✨ What's new
 
-Coucou now **answers to your keyboard**: open the chat, jump to the waiting permission or bring your agent's window forward from any app, without reaching for the mouse.
+The open island **makes room**: your pills move up into the top bar, and the card below gets the whole width.
 
-### ⌨️ Shortcuts from anywhere
-- **`Ctrl+Shift+Alt` plus one key**, from any app:
+### 🏝️ Pills in the top bar
+- **Every pill now sits in the top bar**, between the tabs and Settings: Mochi's little face in its colour, with its badge when something needs you. Hover to see its name, click to open its card.
+- **More pills than room?** The last one becomes **+N**: click it for the rest.
+- Clicking a pill from the chat, Today or Settings takes you straight to its card.
 
-| Keys | What happens |
-|---|---|
-| `Space` | Opens the chat |
-| `A` | Goes to the waiting permission or question |
-| `T` | Brings the agent's window forward |
-| `]` / `[` | Next / previous pill |
-| `M` | Mutes or unmutes Mochi |
-| `D` | Sends Mochi to the desktop and back |
-| `G` | Opens or closes the wardrobe |
-
-- **Open / close the island** gets a shortcut too, once you give it a key.
-
-### 🏝️ Inside the open island
-- **`Ctrl+←` / `Ctrl+→` and `Ctrl+1`–`Ctrl+9`** switch pills, **`Ctrl+E`** opens the latest diff, **`Ctrl+K`** starts a new conversation, **`Ctrl+,`** opens Settings and **`Ctrl+P`** pins the island.
-
-### ⚙️ Settings → Shortcuts
-- **Pick another modifier, record your own key for each action, or turn any of them off.** Coucou warns you when two actions share a key or another app already took it, and **Reset** brings the defaults back.
-- **On Linux with Wayland** (GNOME, KDE Plasma…), the desktop asks once to allow the shortcuts and keeps them in its own keyboard settings. On X11 Coucou grabs the keys itself.
+### 📐 A card that fills the island
+- **The card now spans the whole island**, no more split in two. Long lines on the home card (your next task, your plans' usage) no longer get cut off.
 
 ### 🔒 Still private by design
 No telemetry, no account. Keys stay in your system keychain, and the app only talks to the services you turn on.
