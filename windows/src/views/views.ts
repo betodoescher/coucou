@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { HOME_ID, State, type AgentTask } from "../core/state";
+import { HOME_ID, State, TODO_PILL_ID, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -24,7 +24,7 @@ import { lastTextStep } from "../core/diff";
 import { Bridge } from "../core/bridge";
 import { buildRecap } from "./recap";
 import { buildWardrobe } from "./wardrobe";
-import { buildSpotifyCard, buildSpotifyPill, type SpotifyPillHost } from "./spotify";
+import { buildSpotifyCard } from "./spotify";
 import { SPOTIFY_ID } from "../core/spotify";
 import type { Outfit, OutfitSelection } from "../mochi/wardrobe";
 import { language, t, tl, type Msg } from "../i18n/i18n";
@@ -109,6 +109,10 @@ function stack(padLeft: number, padRight: number, ...children: Node[]): HTMLElem
 
 // ── Header ────────────────────────────────────────────────────────────────────
 
+/** A header pill's width and the gap after it, as in `.header-pills`. */
+const PILL_W = 34;
+const PILL_GAP = 5;
+
 export function buildHeader(actions: ViewActions): ViewHost {
   const tabHome = h("button", { class: "tab", title: tl("Overview"), onclick: () => go("overview") }, svg(ICONS.house, 13));
   const tabChat = h("button", { class: "tab", title: tl("Ask"), onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
@@ -134,17 +138,84 @@ export function buildHeader(actions: ViewActions): ViewHost {
     actions.setView(v);
   }
 
+  // The other pills sit in the top bar; those that don't fit go under "+N".
+  const pillBar = h("div", { class: "header-pills" });
+  const moreMenu = h("div", { class: "pill-menu" });
+  let pillKey = "";
+  let hidden: AgentTask[] = [];
+
+  function closeMenu() {
+    moreMenu.classList.remove("on");
+  }
+
+  function pick(task: AgentTask) {
+    closeMenu();
+    actions.setFocus(task.id);
+    if (task.id !== TODO_PILL_ID && State.view !== "overview") actions.setView("overview");
+  }
+
+  const moreBtn = h("button", {
+    class: "pill-more",
+    onclick: (e: Event) => {
+      e.stopPropagation();
+      if (moreMenu.classList.contains("on")) return closeMenu();
+      clear(moreMenu);
+      for (const task of hidden) {
+        moreMenu.append(h(
+          "button",
+          { class: "pill-menu-row", onclick: () => pick(task) },
+          createMiniBot(task, 14),
+          h("span", { text: pillLabel(task) }),
+        ));
+      }
+      moreMenu.classList.add("on");
+    },
+  });
+  document.addEventListener("click", (e) => {
+    if (!moreMenu.contains(e.target as Node)) closeMenu();
+  });
+
+  const headerActions = h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn);
   const el = h(
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabTodos, tabDrop),
-    h("div", { class: "header-actions" }, planPills, gearBtn, soundBtn),
+    pillBar,
+    headerActions,
+    moreMenu,
   );
-  const headerActions = el.lastElementChild as HTMLElement;
+
+  function syncPills() {
+    const tasks = State.otherTasks;
+    const css = getComputedStyle(pillBar);
+    const inner = pillBar.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+    const width = inner > 0 ? inner : 6 * (PILL_W + PILL_GAP);
+    const fit = Math.max(1, Math.floor((width + PILL_GAP) / (PILL_W + PILL_GAP)));
+    const shown = tasks.length > fit ? tasks.slice(0, fit - 1) : tasks;
+    hidden = tasks.slice(shown.length);
+    const key = `${fit}#` + tasks.map((x) => `${x.id}:${x.name}:${x.color}:${x.pillBadge ?? ""}`).join("|");
+    if (key === pillKey) return;
+    pillKey = key;
+    clear(pillBar);
+    for (const task of shown) pillBar.append(buildPill(task, () => pick(task)));
+    if (hidden.length) {
+      moreBtn.textContent = `+${hidden.length}`;
+      moreBtn.title = hidden.map(pillLabel).join(", ");
+      pillBar.append(moreBtn);
+    } else {
+      closeMenu();
+    }
+    pruneMiniBots();
+  }
+
+  // The island's width animates frame by frame while it opens.
+  new ResizeObserver(() => syncPills()).observe(pillBar);
 
   return {
     el,
     sync() {
+      syncPills();
+      if (State.mode !== "expanded") closeMenu();
       const v = State.view;
       tabHome.classList.toggle("on", v === "overview" || v === "empty");
       tabChat.classList.toggle("on", v === "prompt");
@@ -203,22 +274,15 @@ function buildOverview(actions: ViewActions): ViewHost {
     svg(ICONS.arrowUpRight, 8),
   );
   const left = card(null, leftBody, jump);
-  const pills = h("div", { class: "pills" });
-  const right = card(null, pills);
   // Opened from a plan pill in the header: stands in for the left card.
   const plan = new PlanCard();
   let planTimer: number | null = null;
   // Spotify's card and pill are kept and updated in place: the progress bar
   // runs on, and a slider being dragged must not be rebuilt under the pointer.
   const spotifyCard = buildSpotifyCard();
-  let spotifyPill: SpotifyPillHost | null = null;
 
-  const el = h("div", { class: "view overview" },
-    h("div", { class: "left" }, left),
-    h("div", { class: "right" }, right),
-  );
+  const el = h("div", { class: "view overview" }, left);
 
-  let pillIds = "";
   let detailOpen = false;
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | "plan" | "diff" | "spotify" | null = null;
@@ -402,24 +466,6 @@ function buildOverview(actions: ViewActions): ViewHost {
       if (State.cardSelection != null && State.cardSelection >= rows.length) State.cardSelection = null;
       highlightRow(rows, State.cardSelection, State.cardSelection !== shownSelection);
       shownSelection = State.cardSelection;
-
-      const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.color}:${t.pillBadge ?? ""}`).join("|");
-      if (pillKey !== pillIds) {
-        pillIds = pillKey;
-        clear(pills);
-        spotifyPill = null;
-        for (const t of others) {
-          if (t.id === SPOTIFY_ID) {
-            spotifyPill = buildSpotifyPill(t, () => actions.setFocus(t.id));
-            pills.append(spotifyPill.el);
-          } else {
-            pills.append(buildPill(t, actions));
-          }
-        }
-        pruneMiniBots();
-      }
-      spotifyPill?.sync();
     },
   };
 }
@@ -438,27 +484,25 @@ export function hasSessionTicker(task: AgentTask): boolean {
   return isSession && (task.state !== "idle" || task.steps.length > 0);
 }
 
-function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? pillDefinition(task.id)!.name : task.name;
-  const canvas = createMiniBot(task, 24);
-  const pill = h(
-    "div",
-    { class: "pill", onclick: () => actions.setFocus(task.id) },
-    canvas,
-    h("span", { class: "lbl", text: label }),
-  );
+function pillLabel(task: AgentTask): string {
+  return task.id === "integration_claude" ? pillDefinition(task.id)!.name : task.name;
+}
+
+function buildPill(task: AgentTask, onClick: () => void): HTMLElement {
+  const mini = task.id === SPOTIFY_ID
+    ? createMiniBot(task, 14, () => State.spotifyPlaying)
+    : createMiniBot(task, 14);
+  const pill = h("button", { class: "pill", title: pillLabel(task), onclick: onClick }, mini);
   pill.style.borderColor = `${task.color}24`;
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;
     pill.style.borderColor = `${task.color}8c`;
     pill.style.boxShadow = `0 2px 10px ${task.color}59`;
-    (pill.querySelector(".lbl") as HTMLElement).style.color = lighten(task.color, 0.3);
   });
   pill.addEventListener("mouseleave", () => {
     pill.style.background = "";
     pill.style.borderColor = `${task.color}24`;
     pill.style.boxShadow = "";
-    (pill.querySelector(".lbl") as HTMLElement).style.color = "";
   });
 
   if (task.pillBadge) {
@@ -470,14 +514,6 @@ function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
     pill.append(badge);
   }
   return pill;
-}
-
-function lighten(hex: string, amount: number): string {
-  const v = parseInt(hex.replace("#", ""), 16);
-  const c = [(v >> 16) & 255, (v >> 8) & 255, v & 255].map((x) =>
-    Math.min(255, Math.round(x + amount * 255)),
-  );
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
 
 // ── Empty ─────────────────────────────────────────────────────────────────────
