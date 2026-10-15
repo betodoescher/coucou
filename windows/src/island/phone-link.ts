@@ -88,7 +88,7 @@ export function linkDiff(pillId: string, fileId: number): PhoneLinkDiff {
 /** The agents' sessions — not the services — and the request the phone may answer. */
 export function linkSnapshot(): LinkSnapshot {
   const sessions: PhoneLinkSession[] = State.tasks
-    .filter((t) => t.source !== "n8n")
+    .filter((t) => t.source !== "n8n" && t.source !== "todos")
     .map((t) => {
       const last = t.steps[t.steps.length - 1] ?? "";
       // A step that stands for a file diff is shown by the file's name.

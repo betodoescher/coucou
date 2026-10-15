@@ -11,7 +11,7 @@ import {
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State, TODO_PILL_ID } from "../core/state";
+import { HOME_ID, State, TODO_PILL_ID } from "../core/state";
 import { SPOTIFY_ID, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
@@ -24,7 +24,7 @@ import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../vie
 import { h } from "../views/dom";
 import { todayRowCount } from "../views/today";
 import { IslandStateMachine } from "./fsm";
-import { refreshHookPills } from "./integrations";
+import { refreshHookPills, refreshUsage } from "./integrations";
 import { DesktopLink } from "./desktop";
 import type { ViewCommand } from "./shortcuts";
 import { DRAG_THRESHOLD } from "../mochi/desktop-logic";
@@ -198,7 +198,10 @@ export class Island {
           void Bridge.openSession(task.sessionId ?? null, task.sessionCwd ?? null);
         } else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (task.id === SPOTIFY_ID) void Bridge.spotifyOpen();
-        else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
+        else if (task.id === HOME_ID) {
+          State.todayTab = "tasks";
+          this.setView("todos");
+        } else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
       openUrl: (url) => {
         if (url) void Bridge.openUrl(url);
@@ -357,7 +360,10 @@ export class Island {
     const prev = State.mode;
     if (mode === prev) return;
     State.mode = mode;
-    if (mode === "expanded") Sound.play("open");
+    if (mode === "expanded") {
+      Sound.play("open");
+      if (State.tasks.some((x) => x.id === HOME_ID)) void refreshUsage();
+    }
     if (prev === "expanded") {
       Sound.play("close");
       // A folded card is still waiting: it keeps the island pinned.

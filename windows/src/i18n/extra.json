@@ -4885,6 +4885,257 @@
    "pt-BR": "Não foi possível salvar suas tarefas: {error}",
    "ru": "Не удалось сохранить задачи: {error}",
    "id": "Tidak dapat menyimpan tugas Anda: {error}"
+  },
+  "Weather city": {
+   "zh-Hans": "天气城市",
+   "hi": "मौसम का शहर",
+   "es": "Ciudad del clima",
+   "ar": "مدينة الطقس",
+   "fr": "Ville pour la météo",
+   "bn": "আবহাওয়ার শহর",
+   "pt-BR": "Cidade do clima",
+   "ru": "Город для погоды",
+   "id": "Kota cuaca"
+  },
+  "For the Today pill. Only the city goes to Open-Meteo, which needs no account.": {
+   "zh-Hans": "用于“今天”标签。只有城市名会发送到 Open-Meteo，无需账户。",
+   "hi": "आज वाली पिल के लिए। केवल शहर Open-Meteo को भेजा जाता है, जिसके लिए किसी खाते की ज़रूरत नहीं।",
+   "es": "Para la píldora Hoy. Solo la ciudad se envía a Open-Meteo, que no necesita cuenta.",
+   "ar": "لحبة «اليوم». تُرسل المدينة فقط إلى Open-Meteo، ولا يحتاج إلى حساب.",
+   "fr": "Pour la pastille Aujourd’hui. Seule la ville est envoyée à Open-Meteo, qui ne demande aucun compte.",
+   "bn": "আজকের পিলের জন্য। শুধু শহরটি Open-Meteo-তে যায়, যার জন্য কোনো অ্যাকাউন্ট লাগে না।",
+   "pt-BR": "Para a pílula Hoje. Só a cidade vai para o Open-Meteo, que não precisa de conta.",
+   "ru": "Для плашки «Сегодня». В Open-Meteo уходит только город, учётная запись не нужна.",
+   "id": "Untuk pil Hari Ini. Hanya kota yang dikirim ke Open-Meteo, yang tidak memerlukan akun."
+  },
+  "Cloudy": {
+   "zh-Hans": "多云",
+   "hi": "बादल",
+   "es": "Nublado",
+   "ar": "غائم",
+   "fr": "Nuageux",
+   "bn": "মেঘলা",
+   "pt-BR": "Nublado",
+   "ru": "Облачно",
+   "id": "Berawan"
+  },
+  "Fog": {
+   "zh-Hans": "雾",
+   "hi": "कोहरा",
+   "es": "Niebla",
+   "ar": "ضباب",
+   "fr": "Brouillard",
+   "bn": "কুয়াশা",
+   "pt-BR": "Neblina",
+   "ru": "Туман",
+   "id": "Kabut"
+  },
+  "Snow": {
+   "zh-Hans": "雪",
+   "hi": "बर्फ़",
+   "es": "Nieve",
+   "ar": "ثلج",
+   "fr": "Neige",
+   "bn": "তুষার",
+   "pt-BR": "Neve",
+   "ru": "Снег",
+   "id": "Salju"
+  },
+  "Storm": {
+   "zh-Hans": "雷暴",
+   "hi": "तूफ़ान",
+   "es": "Tormenta",
+   "ar": "عاصفة",
+   "fr": "Orage",
+   "bn": "ঝড়",
+   "pt-BR": "Tempestade",
+   "ru": "Гроза",
+   "id": "Badai"
+  },
+  "Rain": {
+   "zh-Hans": "雨",
+   "hi": "बारिश",
+   "es": "Lluvia",
+   "ar": "مطر",
+   "fr": "Pluie",
+   "bn": "বৃষ্টি",
+   "pt-BR": "Chuva",
+   "ru": "Дождь",
+   "id": "Hujan"
+  },
+  "{plan}: {pct} used, resets {date}": {
+   "zh-Hans": "{plan}：已用 {pct}，{date} 重置",
+   "hi": "{plan}: {pct} इस्तेमाल, {date} को रीसेट",
+   "es": "{plan}: {pct} usado, se reinicia el {date}",
+   "ar": "{plan}: استُخدم {pct}، يُعاد الضبط في {date}",
+   "fr": "{plan} : {pct} utilisé, remise à zéro le {date}",
+   "bn": "{plan}: {pct} ব্যবহৃত, {date} রিসেট",
+   "pt-BR": "{plan}: {pct} usado, renova em {date}",
+   "ru": "{plan}: использовано {pct}, сброс {date}",
+   "id": "{plan}: {pct} terpakai, diatur ulang {date}"
+  },
+  "{plan}: {used} of {limit} credits, resets {date}": {
+   "zh-Hans": "{plan}：{used}/{limit} 积分，{date} 重置",
+   "hi": "{plan}: {limit} में से {used} क्रेडिट, {date} को रीसेट",
+   "es": "{plan}: {used} de {limit} créditos, se reinicia el {date}",
+   "ar": "{plan}: {used} من {limit} رصيد، يُعاد الضبط في {date}",
+   "fr": "{plan} : {used} crédits sur {limit}, remise à zéro le {date}",
+   "bn": "{plan}: {limit}-এর মধ্যে {used} ক্রেডিট, {date} রিসেট",
+   "pt-BR": "{plan}: {used} de {limit} créditos, renova em {date}",
+   "ru": "{plan}: {used} из {limit} кредитов, сброс {date}",
+   "id": "{plan}: {used} dari {limit} kredit, diatur ulang {date}"
+  },
+  "Claude Code: {count} tokens today": {
+   "zh-Hans": "Claude Code：今天 {count} 个 token",
+   "hi": "Claude Code: आज {count} टोकन",
+   "es": "Claude Code: {count} tokens hoy",
+   "ar": "Claude Code: ‏{count} رمزًا اليوم",
+   "fr": "Claude Code : {count} tokens aujourd’hui",
+   "bn": "Claude Code: আজ {count} টোকেন",
+   "pt-BR": "Claude Code: {count} tokens hoje",
+   "ru": "Claude Code: {count} токенов сегодня",
+   "id": "Claude Code: {count} token hari ini"
+  },
+  "Rain {pct}%": {
+   "zh-Hans": "降雨 {pct}%",
+   "hi": "बारिश {pct}%",
+   "es": "Lluvia {pct}%",
+   "ar": "مطر {pct}%",
+   "fr": "Pluie {pct} %",
+   "bn": "বৃষ্টি {pct}%",
+   "pt-BR": "Chuva {pct}%",
+   "ru": "Дождь {pct}%",
+   "id": "Hujan {pct}%"
+  },
+  "Loading weather…": {
+   "zh-Hans": "正在加载天气…",
+   "hi": "मौसम लोड हो रहा है…",
+   "es": "Cargando el clima…",
+   "ar": "جارٍ تحميل الطقس…",
+   "fr": "Chargement de la météo…",
+   "bn": "আবহাওয়া লোড হচ্ছে…",
+   "pt-BR": "Carregando o clima…",
+   "ru": "Загрузка погоды…",
+   "id": "Memuat cuaca…"
+  },
+  "Set a city for weather…": {
+   "zh-Hans": "设置天气城市…",
+   "hi": "मौसम के लिए शहर चुनें…",
+   "es": "Elige una ciudad para el clima…",
+   "ar": "حدّد مدينة للطقس…",
+   "fr": "Choisissez une ville pour la météo…",
+   "bn": "আবহাওয়ার জন্য একটি শহর দিন…",
+   "pt-BR": "Defina uma cidade para o clima…",
+   "ru": "Укажите город для погоды…",
+   "id": "Atur kota untuk cuaca…"
+  },
+  "No open tasks": {
+   "zh-Hans": "没有待办任务",
+   "hi": "कोई खुला काम नहीं",
+   "es": "No hay tareas pendientes",
+   "ar": "لا توجد مهام مفتوحة",
+   "fr": "Aucune tâche en cours",
+   "bn": "কোনো খোলা কাজ নেই",
+   "pt-BR": "Nenhuma tarefa aberta",
+   "ru": "Нет открытых задач",
+   "id": "Tidak ada tugas terbuka"
+  },
+  "Habits {done}/{total}": {
+   "zh-Hans": "习惯 {done}/{total}",
+   "hi": "आदतें {done}/{total}",
+   "es": "Hábitos {done}/{total}",
+   "ar": "العادات {done}/{total}",
+   "fr": "Habitudes {done}/{total}",
+   "bn": "অভ্যাস {done}/{total}",
+   "pt-BR": "Hábitos {done}/{total}",
+   "ru": "Привычки {done}/{total}",
+   "id": "Kebiasaan {done}/{total}"
+  },
+  "No agents at work": {
+   "zh-Hans": "没有代理在工作",
+   "hi": "कोई एजेंट काम पर नहीं",
+   "es": "Ningún agente trabajando",
+   "ar": "لا يعمل أي وكيل",
+   "fr": "Aucun agent au travail",
+   "bn": "কোনো এজেন্ট কাজ করছে না",
+   "pt-BR": "Nenhum agente trabalhando",
+   "ru": "Агенты не работают",
+   "id": "Tidak ada agen yang bekerja"
+  },
+  "{count} waiting": {
+   "zh-Hans": "{count} 个等待中",
+   "hi": "{count} प्रतीक्षा में",
+   "es": "{count} en espera",
+   "ar": "{count} في الانتظار",
+   "fr": "{count} en attente",
+   "bn": "{count} অপেক্ষায়",
+   "pt-BR": "{count} aguardando",
+   "ru": "ожидают: {count}",
+   "id": "{count} menunggu"
+  },
+  "{count} agents at work": {
+   "zh-Hans": {
+    "other": "{count} 个代理在工作"
+   },
+   "hi": {
+    "one": "{count} एजेंट काम पर",
+    "other": "{count} एजेंट काम पर"
+   },
+   "es": {
+    "one": "{count} agente trabajando",
+    "other": "{count} agentes trabajando"
+   },
+   "ar": {
+    "zero": "لا وكلاء يعملون",
+    "one": "وكيل واحد يعمل",
+    "two": "وكيلان يعملان",
+    "few": "{count} وكلاء يعملون",
+    "many": "{count} وكيلًا يعملون",
+    "other": "{count} وكيل يعملون"
+   },
+   "fr": {
+    "one": "{count} agent au travail",
+    "other": "{count} agents au travail"
+   },
+   "bn": {
+    "one": "{count}টি এজেন্ট কাজ করছে",
+    "other": "{count}টি এজেন্ট কাজ করছে"
+   },
+   "pt-BR": {
+    "one": "{count} agente trabalhando",
+    "other": "{count} agentes trabalhando"
+   },
+   "ru": {
+    "one": "{count} агент работает",
+    "few": "{count} агента работают",
+    "many": "{count} агентов работают",
+    "other": "{count} агента работают"
+   },
+   "id": {
+    "other": "{count} agen bekerja"
+   }
+  },
+  "City not found: {city}": {
+   "zh-Hans": "未找到城市：{city}",
+   "hi": "शहर नहीं मिला: {city}",
+   "es": "Ciudad no encontrada: {city}",
+   "ar": "لم يُعثر على المدينة: {city}",
+   "fr": "Ville introuvable : {city}",
+   "bn": "শহর পাওয়া যায়নি: {city}",
+   "pt-BR": "Cidade não encontrada: {city}",
+   "ru": "Город не найден: {city}",
+   "id": "Kota tidak ditemukan: {city}"
+  },
+  "Weather unavailable": {
+   "zh-Hans": "天气不可用",
+   "hi": "मौसम उपलब्ध नहीं",
+   "es": "Clima no disponible",
+   "ar": "الطقس غير متاح",
+   "fr": "Météo indisponible",
+   "bn": "আবহাওয়া পাওয়া যাচ্ছে না",
+   "pt-BR": "Clima indisponível",
+   "ru": "Погода недоступна",
+   "id": "Cuaca tidak tersedia"
   }
  }
 }

@@ -5,7 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import type { Settings } from "./state";
+import type { CursorPlan, KiroPlan, Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
 import type { TodoDoc } from "./todos";
@@ -341,6 +341,10 @@ export const Bridge = {
   todosLoad: () => call<TodoDoc>("todos_load"),
   /** Validated and written atomically by Rust, then sent to every window as "todos-changed". */
   todosSave: (doc: TodoDoc) => callOrThrow<void>("todos_save", { doc }),
+  /** The Today card: Claude Code's tokens since the local midnight. */
+  usageToday: (sinceMs: number) => call<number>("usage_today", { sinceMs }),
+  /** The Today card: Cursor's and Kiro's plan usage, for the plans turned on; takes seconds. */
+  planUsage: () => call<{ cursor: CursorPlan | null; kiro: KiroPlan | null }>("plan_usage"),
   /** Whether a plan's CLI (Cursor, Kiro) is installed and signed in. */
   planStatus: (provider: string) => call<PlanStatus>("plan_status", { provider }),
   /** Opens the plan's browser sign-in through its CLI. */

@@ -13,6 +13,33 @@ const GITHUB = "integration_github";
 
 const clearTimers = new Map<string, number>();
 
+// ── The Today card's AI usage (this fork only) ───────────────────────────────
+
+let usageReadAt = -Infinity;
+let plansReadAt = -Infinity;
+
+/** Claude Code's log at most every 30 s; the Cursor and Kiro CLIs, which take
+ *  seconds to start, every 10 minutes and only for the plans turned on. */
+export async function refreshUsage() {
+  const now = performance.now();
+  const base = () => State.usage ?? { claudeTokens: 0, cursor: null, kiro: null };
+  if (State.settings.planChats.length && now - plansReadAt >= 600_000) {
+    plansReadAt = now;
+    void Bridge.planUsage().then((plans) => {
+      if (!plans) return;
+      State.usage = { ...base(), cursor: plans.cursor, kiro: plans.kiro };
+      State.notify();
+    });
+  }
+  if (now - usageReadAt < 30_000) return;
+  usageReadAt = now;
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  const tokens = await Bridge.usageToday(midnight.getTime());
+  State.usage = { ...base(), claudeTokens: tokens ?? 0 };
+  State.notify();
+}
+
 export function registerIntegrationHandlers(island: Island) {
   void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
   void onEvent<GitHubEvent[]>("github-alerts", handleGitHubAlerts);

@@ -91,7 +91,7 @@ fn cli_path(provider: &str) -> Option<PathBuf> {
     })
 }
 
-const WORKDIRS: [&str; 2] = ["cursor-chat", "kiro-chat"];
+const WORKDIRS: [&str; 4] = ["cursor-chat", "kiro-chat", "cursor-usage", "kiro-usage"];
 
 fn workdir(provider: &str) -> Result<PathBuf, String> {
     let dir = crate::settings::local_dir().join(if provider == KIRO { WORKDIRS[1] } else { WORKDIRS[0] });
@@ -292,6 +292,170 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
+// ── Plan usage, for the Today card ────────────────────────────────────────────
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CursorPlan {
+    pub plan: String,
+    pub percent: f64,
+    pub auto: Option<f64>,
+    pub api: Option<f64>,
+    pub resets: String,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct KiroPlan {
+    pub plan: String,
+    pub used: f64,
+    pub limit: f64,
+    pub resets: String,
+}
+
+/// What Cursor's `/usage` shows. It only exists in the interactive CLI, so the
+/// CLI runs in a pseudo-terminal (`script`), gets the command typed in, and
+/// its table is read.
+#[cfg(unix)]
+pub async fn cursor_usage() -> Result<CursorPlan, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let cli = cli_path(CURSOR).ok_or_else(|| not_found(CURSOR))?;
+    let dir = crate::settings::local_dir().join(WORKDIRS[2]);
+    platform::ensure_private_dir(&dir).map_err(|e| e.to_string())?;
+    let quoted = format!("'{}'", cli.to_string_lossy().replace('\'', r"'\''"));
+    let mut cmd = Command::new("script");
+    cmd.args(["-qfc", &format!("stty cols 120 rows 40; exec {quoted}"), "/dev/null"])
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env(QUIET_ENV, "1")
+        .kill_on_drop(true);
+    if let Some(key) = secrets::get(CURSOR_KEY) {
+        cmd.env("CURSOR_API_KEY", key);
+    }
+    let start_err = |e: String| tf("Could not start the {name} CLI: {error}", &[("name", "Cursor"), ("error", &e)]);
+    let mut child = cmd.spawn().map_err(|e| start_err(e.to_string()))?;
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Err(start_err(String::new()));
+    };
+
+    let read = async {
+        let (mut buf, mut chunk) = (Vec::new(), [0u8; 8192]);
+        // Where the output stood at each try; None until the first one.
+        let (mut typed_at, mut tries): (Option<usize>, u32) = (None, 0);
+        loop {
+            match tokio::time::timeout(Duration::from_millis(1500), stdout.read(&mut chunk)).await {
+                Ok(Ok(0)) | Ok(Err(_)) => return Err(tf("{name} returned an error.", &[("name", "Cursor")])),
+                Ok(Ok(n)) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf);
+                    if typed_at.is_some() && text.contains("Esc to close") {
+                        return Ok(strip_ansi(&text));
+                    }
+                }
+                // The screen has settled. Typed key by key: a pasted burst is
+                // not read as a command. Retyped if the keys went unseen
+                // because the CLI was still starting.
+                Err(_) if !buf.is_empty() && tries < 3 => {
+                    let unseen = typed_at.is_none_or(|at| !String::from_utf8_lossy(&buf[at..]).contains("usage"));
+                    if unseen {
+                        typed_at = Some(buf.len());
+                        tries += 1;
+                        for key in ["/", "u", "s", "a", "g", "e", "\r"] {
+                            stdin.write_all(key.as_bytes()).await.map_err(|e| e.to_string())?;
+                            tokio::time::sleep(Duration::from_millis(150)).await;
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    };
+    let text = tokio::time::timeout(Duration::from_secs(45), read)
+        .await
+        .map_err(|_| tf("{name} took too long to answer.", &[("name", "Cursor")]))??;
+    parse_cursor_plan(&text).ok_or_else(|| tf("{name} returned an error.", &[("name", "Cursor")]))
+}
+
+// No `script` on Windows; reading `/usage` there needs a ConPTY.
+#[cfg(not(unix))]
+pub async fn cursor_usage() -> Result<CursorPlan, String> {
+    Err(tf("{name} returned an error.", &[("name", "Cursor")]))
+}
+
+/// " Usage • Pro            Resets 15 de out."
+/// " Included        69% used     ████"
+fn parse_cursor_plan(text: &str) -> Option<CursorPlan> {
+    let table = &text[text.rfind("Usage •")?..];
+    let head = table.lines().next()?.trim_start_matches("Usage •").trim();
+    let (plan, resets) = head.split_once("Resets ").unwrap_or((head, ""));
+    let percent = |name: &str| {
+        table.lines().find_map(|l| {
+            let rest = l.trim().strip_prefix(name)?;
+            rest.split_whitespace().next()?.strip_suffix('%')?.parse().ok()
+        })
+    };
+    Some(CursorPlan {
+        plan: plan.trim().into(),
+        percent: percent("Included")?,
+        auto: percent("Auto"),
+        api: percent("API"),
+        resets: resets.trim().into(),
+    })
+}
+
+/// What Kiro's `/usage` shows. It costs no credit, but every run leaves an
+/// empty session behind, so it runs in a folder of its own and deletes those.
+pub async fn kiro_usage() -> Result<KiroPlan, String> {
+    let cli = cli_path(KIRO).ok_or_else(|| not_found(KIRO))?;
+    let dir = crate::settings::local_dir().join(WORKDIRS[3]);
+    platform::ensure_private_dir(&dir).map_err(|e| e.to_string())?;
+    let mut cmd = command(KIRO, &cli);
+    cmd.current_dir(&dir).args(["chat", "--no-interactive", "/usage"]);
+    let out = run(KIRO, cmd).await;
+    forget_kiro_sessions(&cli, &dir).await;
+    let out = out?;
+    let text = strip_ansi(&format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+    parse_kiro_plan(&text).ok_or_else(|| tf("{name} returned an error.", &[("name", "Kiro")]))
+}
+
+#[derive(Deserialize)]
+struct KiroSessionDir {
+    cwd: String,
+    sessions: Vec<KiroSession>,
+}
+
+#[derive(Deserialize)]
+struct KiroSession {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+}
+
+async fn forget_kiro_sessions(cli: &Path, dir: &Path) {
+    let mut cmd = command(KIRO, cli);
+    cmd.current_dir(dir).args(["chat", "--list-sessions", "-f", "json"]);
+    let Ok(out) = run(KIRO, cmd).await else { return };
+    let dirs: Vec<KiroSessionDir> = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    // Only this folder's: the user's own sessions are never touched.
+    for s in dirs.into_iter().filter(|d| Path::new(&d.cwd) == dir).flat_map(|d| d.sessions) {
+        let mut cmd = command(KIRO, cli);
+        cmd.current_dir(dir).args(["chat", "--delete-session", &s.session_id]);
+        let _ = run(KIRO, cmd).await;
+    }
+}
+
+/// "Estimated Usage | resets on 2026-11-01 | KIRO PRO+"
+/// "Credits (37.67 of 2000 covered in plan), 1.9%"
+fn parse_kiro_plan(text: &str) -> Option<KiroPlan> {
+    let head = text.lines().find(|l| l.contains("resets on"))?;
+    let resets = head.split("resets on").nth(1)?.split('|').next()?.trim().to_string();
+    let plan = head.rsplit('|').next()?.trim().to_string();
+    let (used, rest) = text.split("Credits (").nth(1)?.split_once(" of ")?;
+    let used = used.trim().replace(',', "").parse().ok()?;
+    let limit = rest.split_whitespace().next()?.replace(',', "").parse().ok()?;
+    Some(KiroPlan { plan, used, limit, resets })
+}
+
 // ── Models, sign-in status ────────────────────────────────────────────────────
 
 /// The models the plan offers, for the picker in the chat view.
@@ -409,6 +573,28 @@ mod tests {
         assert_eq!(parse_kiro_models(json)[1], ModelInfo { id: "claude-sonnet-5".into(), label: "Sonnet".into() });
         assert!(parse_kiro_models(b"not json").is_empty());
         assert_eq!(strip_ansi("\u{1b}[32m✓\u{1b}[0m Logged in"), "✓ Logged in");
+    }
+
+    #[test]
+    fn reads_both_plans_usage() {
+        let text = "  → /usage   Show plan and on-demand usage\r\n  Auto\r\n\
+            \u{1b}[1m Usage • Pro\u{1b}[22m          Resets 15 de out.\r\n\
+            \x20Monthly plan and on-demand usage\r\n\r\n Category   Current   Usage\r\n\
+            \x20Included   69% used   ████░░\r\n   Auto   68% used   ███░░\r\n\
+            \x20  API   100% used   █████\r\n On-Demand   Disabled   ———\r\n Esc to close\r\n";
+        assert_eq!(
+            parse_cursor_plan(&strip_ansi(text)),
+            Some(CursorPlan { plan: "Pro".into(), percent: 69.0, auto: Some(68.0), api: Some(100.0), resets: "15 de out.".into() })
+        );
+        assert_eq!(parse_cursor_plan("Not logged in"), None);
+
+        let text = "Estimated Usage | resets on 2026-11-01 | KIRO PRO+\n\
+            Credits (1,037.67 of 2000 covered in plan), 51.9%\n";
+        assert_eq!(
+            parse_kiro_plan(text),
+            Some(KiroPlan { plan: "KIRO PRO+".into(), used: 1037.67, limit: 2000.0, resets: "2026-11-01".into() })
+        );
+        assert_eq!(parse_kiro_plan("error: not logged in"), None);
     }
 
     #[test]

@@ -1005,6 +1005,16 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  const city = h("input", {
+    type: "text", placeholder: "São Paulo, Brasil", maxlength: "80",
+    value: settings.weatherCity, style: "width:180px",
+  }) as HTMLInputElement;
+  city.addEventListener("change", () => {
+    settings.weatherCity = city.value.trim();
+    city.value = settings.weatherCity;
+    void save();
+  });
+
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
     h("option", { value: "primary", text: t("Main display") }),
@@ -1056,6 +1066,11 @@ function generalSection(): HTMLElement {
       h("label", { text: t("Island lives on") }),
       screen,
     ),
+    h("div", { class: "row" },
+      h("label", { text: t("Weather city") }),
+      city,
+    ),
+    h("div", { class: "hint", text: t("For the Today pill. Only the city goes to Open-Meteo, which needs no account.") }),
     h("div", { class: "row" },
       h("label", { text: t("Launch at startup") }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),

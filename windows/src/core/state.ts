@@ -17,8 +17,34 @@ import { tn } from "../i18n/i18n";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
 
+/** The Today pill (this fork only): weather, next task, habits, agents, AI usage. */
+export const HOME_ID = "integration_today";
+
 /** The Tasks pill (this fork only): shown while to-dos are open, opens the Today tab. */
 export const TODO_PILL_ID = "todos";
+export interface TodayUsage {
+  claudeTokens: number;
+  cursor: CursorPlan | null;
+  kiro: KiroPlan | null;
+}
+
+/** Cursor's `/usage`: percents of the monthly plan. */
+export interface CursorPlan {
+  plan: string;
+  percent: number;
+  auto: number | null;
+  api: number | null;
+  resets: string;
+}
+
+/** Kiro's `/usage`: credits of the monthly plan. */
+export interface KiroPlan {
+  plan: string;
+  used: number;
+  limit: number;
+  resets: string;
+}
+
 /** The open panel of the Today tab. */
 export type TodayTab = "tasks" | "habits" | "notes";
 export type PillBadge = "approval" | "finished" | "error";
@@ -130,6 +156,8 @@ export interface Settings {
   chatProvider: ProviderId;
   /** The model picked for each provider other than Anthropic, by provider id. */
   chatModels: Record<string, string>;
+  /** City of the Today card's weather; empty asks nothing of Open-Meteo. */
+  weatherCity: string;
   /** The plans the chat may use through their CLIs ("cursor", "kiro"); with any on, a failed turn falls back. */
   planChats: string[];
   /** Model server addresses once connected; empty means not connected. */
@@ -192,6 +220,7 @@ export const DEFAULT_SETTINGS: Settings = {
   chatProvider: "anthropic",
   chatModels: {},
   planChats: [],
+  weatherCity: "",
   ollamaUrl: "",
   lmstudioUrl: "",
   customUrl: "",
@@ -235,6 +264,8 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   todayTab: TodayTab = "tasks";
+  /** The Today card's AI usage: Claude Code's tokens today, Cursor's and Kiro's plans. */
+  usage: TodayUsage | null = null;
   pendingApproval: ApprovalInfo | null = null;
   /** The pill that was in front when the card came up; it comes back after. */
   focusBeforeApproval: string | null = null;

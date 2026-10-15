@@ -49,6 +49,9 @@ pub struct Settings {
     /// turned on in Settings → Chat. Once any is on, a failed turn falls back
     /// to the next plan, then to the Anthropic key (chat::fallback_chain).
     pub plan_chats: Vec<String>,
+    /// City of the Today card's weather (this fork only); empty asks nothing
+    /// of Open-Meteo.
+    pub weather_city: String,
     /// Addresses of the model servers once connected; empty means not connected.
     pub ollama_url: String,
     pub lmstudio_url: String,
@@ -149,6 +152,7 @@ impl Default for Settings {
             chat_provider: crate::chat::ANTHROPIC.into(),
             chat_models: BTreeMap::new(),
             plan_chats: Vec::new(),
+            weather_city: String::new(),
             ollama_url: String::new(),
             lmstudio_url: String::new(),
             custom_url: String::new(),
@@ -437,6 +441,7 @@ mod tests {
   "chatProvider": "ollama",
   "chatModels": { "ollama": "llama3.2", "openai": "gpt-x" },
   "planChats": ["kiro"],
+  "weatherCity": "Florianópolis SC",
   "ollamaUrl": "http://127.0.0.1:11434",
   "lmstudioUrl": "http://127.0.0.1:1234",
   "customUrl": "https://llm.example.com",
@@ -945,6 +950,7 @@ mod tests {
                 "chatProvider",
                 "chatModels",
                 "planChats",
+                "weatherCity",
                 "ollamaUrl",
                 "lmstudioUrl",
                 "customUrl",

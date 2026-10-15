@@ -5,7 +5,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { HOME_ID, State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
@@ -13,7 +13,7 @@ import { buildToday } from "./today";
 import { Todos } from "../core/todoStore";
 import { dayOf, dueCount } from "../core/todos";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
-import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { homeKey, renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { highlightRow, listRows, openRow } from "./github";
 import { pillDefinition, sessionSubtitle } from "../core/pills";
 import {
@@ -384,6 +384,7 @@ function buildOverview(actions: ViewActions): ViewHost {
           language(), task.id, task.color, detailOpen, task.state, task.steps.join("|"),
           info?.loaded, info?.error, info?.configured,
           JSON.stringify(info?.data ?? {}),
+          task.id === HOME_ID ? `${homeKey()}${JSON.stringify(State.integrations.weather ?? null)}${State.settings.weatherCity}` : "",
         ].join("~");
         if (key !== cardKey) {
           cardKey = key;

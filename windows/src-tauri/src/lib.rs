@@ -36,6 +36,7 @@ mod speech;
 mod spotify;
 mod todos;
 mod tray;
+mod usage;
 mod voice;
 #[cfg(windows)]
 mod webview_drop;
@@ -91,8 +92,11 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
-    let (screen_changed, autostart_changed, shortcuts_changed) = {
+    let (screen_changed, autostart_changed, shortcuts_changed, city_changed) = {
         let mut current = shared.settings.lock().unwrap();
+        let today = |s: &Settings| s.active_integrations.iter().any(|id| id == "integration_today");
+        let city_changed =
+            current.weather_city.trim() != settings.weather_city.trim() || (today(&settings) && !today(&current));
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
         let shortcuts_changed = current.shortcuts != settings.shortcuts;
@@ -111,7 +115,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         settings.phone_relay_url = current.phone_relay_url.clone();
         settings.phone_chat_models = current.phone_chat_models.clone();
         *current = settings;
-        (screen_changed, autostart_changed, shortcuts_changed)
+        (screen_changed, autostart_changed, shortcuts_changed, city_changed)
     };
     let settings = shared.settings.lock().unwrap().clone();
     if let Err(err) = settings::save(&settings) {
@@ -129,6 +133,10 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         island::apply_geometry(&app, &settings.screen, collapsed);
     }
     integrations::settings_saved(&app, &settings.active_integrations);
+    if city_changed {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { integrations::poll_once(app, "weather").await });
+    }
     spotify::sync(&app, &settings.active_integrations);
     if shortcuts_changed {
         shortcuts::apply(&app, &settings.shortcuts);
@@ -536,6 +544,33 @@ fn todos_save(app: AppHandle, doc: todos::TodoDoc) -> Result<(), String> {
     Ok(())
 }
 
+/// The Today card: Claude Code's tokens since `since_ms` (the local midnight).
+#[tauri::command]
+async fn usage_today(since_ms: i64) -> u64 {
+    tauri::async_runtime::spawn_blocking(move || usage::claude_tokens_since(since_ms)).await.unwrap_or(0)
+}
+
+#[derive(serde::Serialize, Default)]
+struct PlansUsage {
+    cursor: Option<plan_chat::CursorPlan>,
+    kiro: Option<plan_chat::KiroPlan>,
+}
+
+/// The Today card: Cursor's and Kiro's plan usage, only for the plans turned
+/// on in Settings → Chat. Their CLIs take seconds to start.
+#[tauri::command]
+async fn plan_usage(shared: State<'_, Shared>) -> Result<PlansUsage, String> {
+    let on = shared.settings.lock().unwrap().plan_chats.clone();
+    let wants = |p: &str| on.iter().any(|q| q == p);
+    let kiro = wants(plan_chat::KIRO).then(|| tauri::async_runtime::spawn(plan_chat::kiro_usage()));
+    let cursor = if wants(plan_chat::CURSOR) { plan_chat::cursor_usage().await.ok() } else { None };
+    let kiro = match kiro {
+        Some(task) => task.await.ok().and_then(Result::ok),
+        None => None,
+    };
+    Ok(PlansUsage { cursor, kiro })
+}
+
 /// Settings → Chat: is the Cursor or Kiro CLI installed and signed in?
 #[tauri::command]
 async fn plan_status(provider: String) -> Result<plan_chat::PlanStatus, String> {
@@ -802,6 +837,8 @@ pub fn run() {
             plan_status,
             todos_load,
             todos_save,
+            usage_today,
+            plan_usage,
             plan_login,
             ingest_file,
             secret_present,

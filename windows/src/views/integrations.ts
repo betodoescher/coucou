@@ -6,13 +6,16 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { State, type AgentTask } from "../core/state";
+import { HOME_ID, State, type AgentTask } from "../core/state";
+import type { PlanUsage } from "../core/plan";
+import { Todos } from "../core/todoStore";
+import { dayOf, upNext, whenLabel } from "../core/todos";
 import { Bridge } from "../core/bridge";
 import { isComingSoon, pillDefinition } from "../core/pills";
 import { refreshHookPills } from "../island/integrations";
 import { readActivity, readPulse, readStats } from "../core/github";
 import { githubDetail, githubPulseCard } from "./github";
-import { N_, language, t } from "../i18n/i18n";
+import { N_, language, t, tn } from "../i18n/i18n";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -445,7 +448,134 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
+// ── Today (this fork only) ────────────────────────────────────────────────────
+
+/** WMO weather code → icon and word (Open-Meteo `weather_code`). */
+function sky(code: number, isDay: boolean): [string, string] {
+  if (code <= 1) return [isDay ? ICONS.sun : ICONS.moon, t("Clear")];
+  if (code <= 3) return [ICONS.cloud, t("Cloudy")];
+  if (code === 45 || code === 48) return [ICONS.cloud, t("Fog")];
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return [ICONS.snow, t("Snow")];
+  if (code >= 95) return [ICONS.storm, t("Storm")];
+  return [ICONS.rain, t("Rain")];
+}
+
+const deg = (v: unknown) => (typeof v === "number" ? `${Math.round(v)}°` : "–");
+const pct = (n: number) => `${n < 10 ? n.toFixed(1).replace(/\.0$/, "") : Math.round(n)}%`;
+
+/** The highest live window of a plan (a window whose reset has passed is back to 0). */
+function planPeak(plan: PlanUsage | null, now: number): number | null {
+  if (!plan) return null;
+  const live = [plan.fiveHour, plan.sevenDay].filter((w) => w && w.resetsAt > now).map((w) => w!.usedPct);
+  return live.length ? Math.max(...live) : plan.fiveHour || plan.sevenDay ? 0 : null;
+}
+
+function tokens(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+function homeSummary() {
+  const now = new Date();
+  const today = dayOf(now);
+  const next = upNext(Todos.doc, 1)[0] ?? null;
+  const habits = Todos.doc.habits ?? [];
+  const agents = State.tasks.filter(
+    (x) => (x.source === "agent" || x.source === "claudeCode") && (x.state !== "idle" || x.steps.length > 0),
+  );
+  return {
+    lang: language(),
+    today,
+    next: next ? { title: next.title, when: next.due ? whenLabel(next, now) : "" } : null,
+    habitsDone: habits.filter((x) => x.days.includes(today)).length,
+    habits: habits.length,
+    agents: agents.length,
+    waiting: agents.filter((x) => x.state === "approval" || x.pillBadge === "approval").length,
+    usage: State.usage,
+    claude: planPeak(State.planUsage, now.getTime()),
+    codex: planPeak(State.codexPlanUsage, now.getTime()),
+  };
+}
+
+/** "Cursor 70% · Kiro 1.9% · Claude 42% · Codex 10%", and the details for the tooltip. */
+function usageText(s: ReturnType<typeof homeSummary>): [string, string] {
+  const bits: string[] = [];
+  const tips: string[] = [];
+  const u = s.usage;
+  if (u?.cursor) {
+    bits.push(`Cursor ${pct(u.cursor.percent)}`);
+    tips.push(t("{plan}: {pct} used, resets {date}", { plan: `Cursor ${u.cursor.plan}`, pct: pct(u.cursor.percent), date: u.cursor.resets }));
+  }
+  if (u?.kiro) {
+    bits.push(`Kiro ${pct(u.kiro.limit ? (u.kiro.used / u.kiro.limit) * 100 : 0)}`);
+    tips.push(t("{plan}: {used} of {limit} credits, resets {date}", { plan: u.kiro.plan, used: u.kiro.used, limit: u.kiro.limit, date: u.kiro.resets }));
+  }
+  if (s.claude != null) bits.push(`Claude ${pct(s.claude)}`);
+  else if (u?.claudeTokens) bits.push(`Claude ${tokens(u.claudeTokens)}`);
+  if (s.codex != null) bits.push(`Codex ${pct(s.codex)}`);
+  if (u?.claudeTokens) tips.push(t("Claude Code: {count} tokens today", { count: u.claudeTokens.toLocaleString(language()) }));
+  return [bits.join(" · "), tips.join("\n")];
+}
+
+/** Changes whenever the Today card would draw differently. */
+export function homeKey(): string {
+  return JSON.stringify(homeSummary());
+}
+
+function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
+  const s = homeSummary();
+  const weather = State.integrations.weather ?? null;
+  const w = (weather?.data ?? {}) as Record<string, unknown>;
+  const hasWeather = typeof w.temp === "number";
+  const city = State.settings.weatherCity.trim();
+
+  const now = hasWeather
+    ? (() => {
+        const [icon, word] = sky(Number(w.code ?? 0), w.isDay !== false);
+        return h("span", { class: "home-now", title: word }, svg(icon, 13, { stroke: 1.8 }), h("span", { text: deg(w.temp) }));
+      })()
+    : undefined;
+  const head = header(task.color, hasWeather ? String(w.city ?? city) : t("Today"), "", now);
+
+  const weatherLine = hasWeather
+    ? h("div", { class: "int-status" }, h("span", {
+        text: `↑ ${deg(w.max)} ↓ ${deg(w.min)}${typeof w.rain === "number" ? ` · ${t("Rain {pct}%", { pct: w.rain })}` : ""}`,
+      }))
+    : city && weather?.error
+      ? h("div", { class: "int-status" }, dot("#F4505E", 5), h("span", { class: "int-name", text: weather.error }))
+      : city
+        ? h("div", { class: "int-status" }, h("span", { text: t("Loading weather…") }))
+        : h("div", { class: "int-status" }, h("button", {
+            class: "link-btn", style: "color:#8e939c;padding:0", text: t("Set a city for weather…"), onclick: openSettings,
+          }));
+
+  const taskLine = h("div", { class: "int-status" },
+    svg(ICONS.checklist, 11, { stroke: 1.8 }),
+    s.next
+      ? h("span", { class: "int-name", text: s.next.when ? `${s.next.when} · ${s.next.title}` : s.next.title })
+      : h("span", { text: t("No open tasks") }),
+  );
+
+  const bits: string[] = [];
+  if (s.habits) bits.push(t("Habits {done}/{total}", { done: s.habitsDone, total: s.habits }));
+  bits.push(s.agents ? tn("{count} agent at work", "{count} agents at work", s.agents) : t("No agents at work"));
+  if (s.waiting) bits.push(t("{count} waiting", { count: s.waiting }));
+  const statusLine = h("div", { class: "int-status" },
+    dot(s.waiting ? "#F5A524" : s.agents ? "#22C55E" : "#6b7079", 5),
+    h("span", { class: "int-name", text: bits.join(" · ") }),
+  );
+
+  const [used, tip] = usageText(s);
+  const usageLine = used
+    ? h("div", { class: "int-status", title: tip }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
+    : null;
+
+  return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine, usageLine);
+}
+
 export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
+  if (task.id === HOME_ID) return homeCard(task, hooks.openSettings);
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity
