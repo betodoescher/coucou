@@ -1,17 +1,51 @@
-// Claude Code hook events → island state.
+// Hook events from Claude Code and every other agent → island state.
 // Port of HookServer.processEvent / processPermissionRequest from the macOS app.
 // Difference from macOS: no terminal filter. On Windows the hook fires from any
 // terminal (Windows Terminal, VS Code, PowerShell…) and all of them are handled.
+// The relay has already mapped every agent's events and fields onto Claude
+// Code's (hook/src/normalize.rs), so one handler serves them all.
 
 import { Bridge, onEvent } from "../core/bridge";
+import { buildFileDiff, fileName, makeDiffStep, toOneLine } from "../core/diff";
 import { Sound } from "../core/sound";
-import { CLAUDE_ID, State, type ApprovalInfo, type AskQuestion } from "../core/state";
+import { State, type AskedQuestion } from "../core/state";
+import { pillDefinition } from "../core/pills";
+import { APPROVAL_AGENTS, agentColor, agentName, validateAgent } from "./agents";
 import type { Island } from "./island";
-import { refreshUsage } from "./integrations";
-import { EDIT_MARK, baseName, editStep, oneLine, unjoinSentences } from "../core/steps";
+import { parseClaudePlan, restorePlanUsage } from "../core/plan";
+import { setClaudePlanUsage, storedClaudePlanUsage } from "../views/usage";
+import { N_, t } from "../i18n/i18n";
+
+const CLAUDE_ID = "integration_claude";
+const CURSOR_ID = "agent_cursor";
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
+
+/** Takes the approval or question card down and gives the island back. */
+export function dropPendingCard(island: Island): void {
+  if (!State.pendingApproval) return;
+  State.endApproval();
+  island.dropPin();
+  if (State.view === "approval" || State.view === "question") {
+    island.setView(State.defaultView());
+  }
+  State.notify();
+}
+
+/** The return to idle that Stop arms, per pill, so the next turn can cancel it. */
+const stopTimers = new Map<string, number>();
+
+function cancelStopTimer(id: string): boolean {
+  const timer = stopTimers.get(id);
+  if (timer == null) return false;
+  window.clearTimeout(timer);
+  stopTimers.delete(id);
+  return true;
+}
+
+/** Events after which a pending permission request of the same session is moot. */
+const TURN_OVER = new Set(["Stop", "StopFailure", "UserPromptSubmit", "SessionEnd", "Interrupt"]);
 
 interface HookPayload {
   hook_event_name?: string;
@@ -21,86 +55,30 @@ interface HookPayload {
   message?: string;
   /** UserPromptSubmit carries `prompt`; `message` belongs to Notification/Stop. */
   prompt?: string;
+  /** Stop: the turn's final answer (Markdown) — Claude Code's, Hermes's, Codex's. */
+  last_assistant_message?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
-  /** Kiro's Stop carries the final answer here. */
-  assistant_response?: string;
-  /** Cursor's and Kiro's SessionEnd: how the session ended. */
-  final_status?: string;
-  reason?: string;
+  /** Set by the relay when an edit was too big to forward whole (> 256 KB). */
+  coucou_diff_truncated?: boolean;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
-  /** A file edit, summarised by coucou-hook. */
-  coucou_diff?: { path: string; added: number; removed: number; lines: string[] };
-  /** Claude Code's Stop: its last answer. */
-  last_assistant_message?: string;
-  /** Cursor's afterAgentResponse: the answer. */
-  text?: string;
-  /** Cursor's postToolUseFailure: "error", "timeout" or "permission_denied". */
-  failure_type?: string;
-  /** Claude Code's PostToolUseFailure: the user interrupted the tool. */
-  is_interrupt?: boolean;
-  /** Added by Coucou: the app the session runs in. */
-  host_pid?: number;
+  /** Hermes: where the session runs (telegram, discord…; "cli" in a terminal). */
+  platform?: string;
+  /** "cursor" when Claude Code runs in Cursor's terminal (set by the relay). */
+  term_editor?: string;
+  /** StatusLine (the plan usage relay): Claude Code's 5-hour and weekly limits. */
+  rate_limits?: unknown;
 }
 
-function failureStep(payload: HookPayload): string {
-  const tool = payload.tool_name ?? "Tool";
-  if (payload.failure_type === "permission_denied") return `⚠ ${tool} denied`;
-  if (payload.failure_type === "timeout") return `⚠ ${tool} timed out`;
-  if (payload.is_interrupt) return `⚠ ${tool} interrupted`;
-  return `⚠ ${tool} failed`;
-}
-
-/** Edits kept per pill; older ones fall off with their ticker steps. */
-const MAX_EDITS = 20;
-let editSeq = 0;
-
-function recordEdit(taskId: string, diff: NonNullable<HookPayload["coucou_diff"]>) {
-  const task = State.tasks.find((t) => t.id === taskId);
-  if (!task || !diff.path) return;
-  const id = String(++editSeq);
-  task.edits = [...(task.edits ?? []), { id, ...diff }].slice(-MAX_EDITS);
-  // The PreToolUse step for this file is already there: it becomes the edit.
-  const tail = ` · ${baseName(diff.path)}`;
-  let at = -1;
-  for (let i = task.steps.length - 1; i >= Math.max(0, task.steps.length - 3); i--) {
-    const s = task.steps[i];
-    if (!s.startsWith(EDIT_MARK) && s.endsWith(tail)) {
-      at = i;
-      break;
-    }
-  }
-  if (at >= 0) {
-    task.steps[at] = editStep(id);
-    State.notify();
-  } else {
-    State.appendStep(taskId, editStep(id));
-  }
-}
-
-/** Agents Coucou installs hooks for: their pill name and colour. */
-const KNOWN_AGENTS: Record<string, [string, string]> = {
-  claude: ["Claude Code", "#F5F6F8"],
-  cursor: ["Cursor", "#C0C4CC"],
-  kiro: ["Kiro", "#9046FF"],
+const PROJECT_ALIASES: Record<string, string> = {
+  "notch-buddy": "Notch Buddy",
+  notchbuddy: "Notch Buddy",
+  notch_buddy: "Notch Buddy",
 };
 
-/** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
-function validateAgent(raw: string | undefined): string | null {
-  if (!raw || raw.length > 24 || raw === "claude") return null;
-  if (!/^[a-z0-9-]+$/.test(raw)) return null;
-  return raw;
-}
-
-const FALLBACK_COLORS = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"];
-
-function agentColor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) {
-    h = (Math.imul(31, h) + name.charCodeAt(i)) | 0;
-  }
-  return FALLBACK_COLORS[Math.abs(h) % FALLBACK_COLORS.length];
+function aliasProjectName(name: string): string {
+  return PROJECT_ALIASES[name.toLowerCase()] ?? name;
 }
 
 function lastPathComponent(p: string): string {
@@ -109,34 +87,38 @@ function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app. */
+/**
+ * localizedStep() — same labels as the macOS app, in English and shown in the
+ * interface language (src/i18n) when the step is recorded.
+ */
 const TOOL_LABELS: Record<string, string> = {
-  Bash: "Exécute",
-  Read: "Lit",
-  Write: "Écrit",
-  Edit: "Modifie",
-  Glob: "Cherche",
-  Grep: "Recherche",
-  WebSearch: "Recherche web",
-  WebFetch: "Récupère",
-  TodoWrite: "Tâches",
-  Task: "Agent",
-  LS: "Liste",
-  MultiEdit: "Modifie",
-  NotebookEdit: "Notebook",
-  PowerShell: "Exécute",
-  Shell: "Exécute",
-  execute_bash: "Exécute",
-  shell: "Exécute",
-  fs_read: "Lit",
-  fs_write: "Écrit",
+  Bash: N_("Runs"),
+  Read: N_("Reads"),
+  Write: N_("Writes"),
+  Edit: N_("Edits"),
+  Glob: N_("Searches"),
+  Grep: N_("Searches"),
+  WebSearch: N_("Searches the web"),
+  WebFetch: N_("Fetches"),
+  TodoWrite: N_("Tasks"),
+  Task: N_("Agent"),
+  LS: N_("Lists"),
+  MultiEdit: N_("Edits"),
+  NotebookEdit: N_("Notebook"),
+  PowerShell: N_("Runs"),
+  // Antigravity's tools (#298).
+  run_command: N_("Runs"),
+  view_file: N_("Reads"),
+  write_to_file: N_("Writes"),
+  replace_file_content: N_("Edits"),
+  read_url_content: N_("Fetches"),
+  search_web: N_("Searches the web"),
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
-  const label = TOOL_LABELS[tool] ?? tool;
+  const label = TOOL_LABELS[tool] ? t(TOOL_LABELS[tool]) : tool;
   const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : null);
-  // Kiro's fs_* tools use `command` for the operation ("append"), not a shell line.
-  const cmd = tool.startsWith("fs_") ? null : str("command");
+  const cmd = str("command");
   if (cmd) return `${label} · ${cmd.slice(0, 40)}`;
   const path = str("path");
   if (path) return `${label} · ${lastPathComponent(path)}`;
@@ -175,43 +157,88 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-/** Claude Code's question tool, answered on the island through its own hook. */
-const QUESTION_TOOL = "AskUserQuestion";
-
-/** 1–4 questions of 2–4 options each, or null: a malformed one goes to the terminal. */
-export function parseQuestions(input: Record<string, unknown>): AskQuestion[] | null {
-  const raw = input.questions;
-  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 4) return null;
-  const out: AskQuestion[] = [];
-  for (const q of raw as Record<string, unknown>[]) {
-    const options = q?.options;
-    if (typeof q?.question !== "string" || !q.question || !Array.isArray(options)) return null;
-    if (options.length < 2 || options.length > 4) return null;
-    const opts = (options as Record<string, unknown>[]).map((o) => ({
-      label: typeof o?.label === "string" ? o.label : "",
-      description: typeof o?.description === "string" ? o.description : "",
-    }));
-    if (opts.some((o) => !o.label)) return null;
-    out.push({
-      question: q.question,
-      header: typeof q.header === "string" ? q.header.slice(0, 12) : "",
-      options: opts,
-      multiSelect: q.multiSelect === true,
-    });
+/**
+ * The questions of an AskUserQuestion call, if the island can show all of them
+ * as options to pick from. Anything it cannot is left to the terminal.
+ */
+function askedQuestions(tool: string, input: Record<string, unknown>): AskedQuestion[] | null {
+  if (tool !== "AskUserQuestion" || !Array.isArray(input.questions)) return null;
+  const out: AskedQuestion[] = [];
+  for (const raw of input.questions as Record<string, unknown>[]) {
+    const question = typeof raw?.question === "string" ? raw.question : "";
+    const options = (Array.isArray(raw?.options) ? (raw.options as Record<string, unknown>[]) : [])
+      .filter((o) => typeof o?.label === "string" && o.label)
+      .map((o) => ({
+        label: o.label as string,
+        description: typeof o.description === "string" ? o.description : "",
+      }));
+    // A question cut short by the relay would be answered under the wrong text.
+    if (!question || question.endsWith("…") || options.length < 2) return null;
+    out.push({ question, options, multiSelect: raw.multiSelect === true });
   }
-  return out;
+  return out.length > 0 ? out : null;
 }
 
-/** Agent pills that already announced the end of this turn. */
-const stopped = new Set<string>();
-/** Pills waiting to go once their session ended and the island closed. */
-const removals = new Map<string, number>();
+/** The Claude Code session's pill, named after its project for the session. */
+function upsert(id: string, projectName: string, cwd: string, sessionId: string) {
+  const t = State.upsertWorkspacePill(id, projectName, cwd);
+  if (t && sessionId) t.sessionId = sessionId;
+}
+
+/** The session is over: the pill goes back as it was, or away if it was only there for it. */
+function clearSession(id: string) {
+  const t = State.tasks.find((x) => x.id === id);
+  if (!t) return;
+  if (!State.isKept(id)) {
+    State.removeTask(id);
+    return;
+  }
+  t.state = "idle";
+  t.steps = [];
+  t.stepIndex = 0;
+  delete t.stepSeq;
+  t.name = pillDefinition(id)?.name ?? t.name;
+  t.pillBadge = null;
+  t.sessionId = null;
+  t.finalLine = null;
+}
+
+/** The final message stays on the card until the next turn starts. */
+function clearFinalLine(id: string) {
+  const t = State.tasks.find((x) => x.id === id);
+  if (t) t.finalLine = null;
+}
+
+/**
+ * PostToolUse of Edit / MultiEdit / Write → a diff stored for the pill and a
+ * ticker step with its +N −M counts. Nothing is kept for a pill that does not
+ * exist, so a stray event cannot grow memory. An edit the relay had to cut
+ * would give wrong counts: the PreToolUse step ("Edits · file") stands alone.
+ */
+function recordDiff(agentId: string, payload: HookPayload) {
+  if (payload.coucou_diff_truncated) return;
+  if (!State.tasks.some((t) => t.id === agentId)) return;
+  const diff = buildFileDiff(payload.tool_name ?? "", payload.tool_input ?? {});
+  if (!diff) return;
+  const id = State.appendSessionDiff(agentId, diff);
+  State.appendStep(agentId, makeDiffStep(fileName(diff.path), diff.added, diff.removed, id));
+}
 
 export function registerHookHandlers(island: Island) {
+  // The last plan numbers seen survive a restart, as on the Mac.
+  State.planUsage ??= restorePlanUsage(storedClaudePlanUsage());
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
 }
 
 function handleHook(island: Island, payload: HookPayload) {
+  // Account-wide numbers from the status line relay, not part of any session:
+  // keep the latest, nothing else (no reveal, no sound), paused or not.
+  if (payload.hook_event_name === "StatusLine") {
+    const usage = parseClaudePlan(payload.rate_limits);
+    if (usage) setClaudePlanUsage(usage);
+    return;
+  }
+
   if (State.paused) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
@@ -222,13 +249,17 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
+  const raw = lastPathComponent(cwd);
+  const projectName = aliasProjectName(raw || "Session");
 
   // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
-  // "claude" is reserved; absent or invalid → the Claude Code pill.
+  // "claude" is reserved; absent or invalid → Claude Code's own pill: Cursor's
+  // when it runs in Cursor's terminal (Mac #120), VS Code's otherwise.
   const validAgent = validateAgent(payload.coucou_agent);
-  const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
-  /** Cursor/Kiro: their shell commands only wait on the island when approvals are on. */
+  const workspaceId = payload.term_editor === "cursor" ? CURSOR_ID : CLAUDE_ID;
+  const agentId = validAgent ? `agent_${validAgent}` : workspaceId;
   const isExternalAgent = validAgent !== null;
+  const sessionId = payload.session_id ?? "";
 
   /** Alerts force the island open; work events only reveal the compact island. */
   const surface = (view: Parameters<Island["alert"]>[0], isAlert: boolean) => {
@@ -241,91 +272,63 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
+  /** Ensure the agent pill exists (no-op for Claude Code). */
   const ensurePill = () => {
-    const pending = removals.get(agentId);
-    if (pending != null) {
-      window.clearTimeout(pending);
-      removals.delete(agentId);
+    if (isExternalAgent) {
+      State.upsertExternalAgent(agentId, agentName(validAgent!), agentColor(validAgent!));
+      const t = State.tasks.find((x) => x.id === agentId);
+      if (t && cwd) t.sessionCwd = cwd;
+      if (t && sessionId) t.sessionId = sessionId;
+    } else {
+      upsert(agentId, projectName, cwd, sessionId);
     }
-    const key = validAgent ?? "claude";
-    const [label, color] = KNOWN_AGENTS[key] ?? [key, agentColor(key)];
-    State.upsertExternalAgent(agentId, label, color);
-    const t = State.tasks.find((x) => x.id === agentId);
-    if (t && cwd) t.sessionCwd = cwd;
-    if (t && payload.host_pid) t.sessionHost = payload.host_pid;
-  };
-
-  /** Open the island on this agent, whatever had the focus. */
-  const announce = (kind: "finished" | "error") => {
-    ensurePill();
-    State.focusId = agentId;
-    State.updateTask(agentId, kind);
-    State.setPillBadge(agentId, null);
-    Sound.play(kind === "error" ? "error" : "finish");
-    surface(kind, true);
-    window.setTimeout(() => State.updateTask(agentId, "idle"), 5200);
-    // The agent writes its usage log right after the turn ends.
-    window.setTimeout(() => void refreshUsage(true), 2000);
   };
 
   /**
-   * Puts a request that waits for a human on screen. One card, one request: a
-   * second one must never quietly replace the first — that would leave a human
-   * staring at request B while request A waits for a decision nobody can give.
-   * It goes straight back to the terminal instead.
+   * Called where a handler is about to replace `finished` with a newer state:
+   * the timer Stop armed would otherwise put the pill back to idle over it. The
+   * badge that timer was going to clear goes now.
    */
-  const holdCard = (info: ApprovalInfo, view: "approval" | "question", sound: "approval" | "question") => {
-    const { requestId } = info;
-    if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
-      if (requestId) void Bridge.approvalDecline(requestId);
-      return;
-    }
-    ensurePill();
-    if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
-    State.pendingApproval = info;
-    // The relay's short ack window closes in 800 ms; everything below this
-    // line is synchronous, so the card really is up by the time it lands.
-    if (requestId) void Bridge.approvalAck(requestId);
-    State.updateTask(agentId, view);
-    State.isPinned = true;
-    Sound.play(sound);
-    // Agents always open on their own card, whatever had the focus.
-    State.focusId = agentId;
-    island.alert(view);
-    // Coucou answers within 108 s or not at all; after that the terminal has
-    // taken over and the card would be lying.
-    pendingTimeout = window.setTimeout(() => {
-      pendingTimeout = null;
-      if (!State.pendingApproval) return;
-      State.pendingApproval = null;
-      State.isPinned = false;
-      island.dropPin();
-      State.updateTask(agentId, "working");
-      State.setPillBadge(agentId, null);
-      if (State.view === view) island.setView(State.defaultView());
-      State.notify();
-    }, 110_000);
+  const supersedeStop = () => {
+    if (cancelStopTimer(agentId)) State.setPillBadge(agentId, null);
   };
 
-  if (name === "SessionStart" || name === "UserPromptSubmit") stopped.delete(agentId);
-  if (name !== "Stop" && name !== "SessionEnd" && name !== "AfterAgentResponse") {
-    const t = State.tasks.find((x) => x.id === agentId);
-    if (t) t.finalShown = false;
+  // The turn that asked for a permission is over — answered in the terminal,
+  // interrupted, or a new prompt — so the card would be lying. It goes, and the
+  // relay is released without a decision. Same rule as the Mac.
+  const pending = State.pendingApproval;
+  if (
+    pending &&
+    TURN_OVER.has(name) &&
+    pending.pillId === agentId &&
+    pending.sessionId === (payload.session_id ?? "")
+  ) {
+    if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+    pendingTimeout = null;
+    if (pending.requestId) void Bridge.approvalDecline(pending.requestId);
+    dropPendingCard(island);
   }
-  if (payload.coucou_diff) {
-    ensurePill();
-    recordEdit(agentId, payload.coucou_diff);
-  }
+
+  // Read after the card above is dropped: its pill may have handed the front
+  // back to the pill you were on.
+  const focused = State.focusId === agentId;
 
   switch (name) {
     case "SessionStart":
       ensurePill();
+      clearFinalLine(agentId);
+      // Hermes through its gateway says where the session comes from.
+      if (validAgent === "hermes" && payload.platform && payload.platform !== "cli") {
+        State.appendStep(agentId, payload.platform.charAt(0).toUpperCase() + payload.platform.slice(1));
+      }
       surface("overview", false);
       Sound.play("work");
       break;
 
     case "UserPromptSubmit": {
       ensurePill();
+      supersedeStop();
+      clearFinalLine(agentId);
       State.updateTask(agentId, "thinking");
       // The field is `prompt`; reading `message` meant this step was always blank.
       const asked = payload.prompt ?? payload.message;
@@ -336,148 +339,172 @@ function handleHook(island: Island, payload: HookPayload) {
 
     case "PreToolUse": {
       ensurePill();
-      const tool = payload.tool_name ?? "Tool";
-      // The question has its own hook and card; this copy is only noise.
-      if (tool === QUESTION_TOOL) break;
+      supersedeStop();
+      clearFinalLine(agentId);
       State.updateTask(agentId, "working");
+      const tool = payload.tool_name ?? "Tool";
       State.appendStep(agentId, stepLabel(tool, payload.tool_input ?? {}));
       surface("overview", false);
       break;
     }
 
     case "PostToolUse":
+      supersedeStop();
+      // The question was answered in the terminal: the card would be lying.
+      if (
+        payload.tool_name === "AskUserQuestion" &&
+        State.pendingApproval?.questions &&
+        State.pendingApproval.sessionId === (payload.session_id ?? "")
+      ) {
+        if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+        pendingTimeout = null;
+        dropPendingCard(island);
+      }
       State.updateTask(agentId, "working");
+      recordDiff(agentId, payload);
       break;
 
     case "PostToolUseFailure":
+      supersedeStop();
       State.updateTask(agentId, "working");
-      State.appendStep(agentId, failureStep(payload));
+      State.appendStep(agentId, t("⚠ failed"));
       break;
 
     case "Notification": {
       const message = payload.message ?? "";
       const lower = message.toLowerCase();
       if (lower.includes("rate limit") || lower.includes("limite d")) {
+        supersedeStop();
         State.updateTask(agentId, "ratelimit");
         Sound.play("rate");
       } else if (message.endsWith("?")) {
+        supersedeStop();
         State.updateTask(agentId, "question");
         State.appendStep(agentId, message);
       }
       break;
     }
 
-    case "AfterAgentResponse": {
-      const t = State.tasks.find((x) => x.id === agentId);
-      if (t && payload.text) t.lastReply = unjoinSentences(payload.text);
+    case "Stop": {
+      State.updateTask(agentId, "finished");
+      // Claude Code puts the turn's answer in the Stop payload itself, so there is
+      // no transcript to read (the relay does not even forward its path). Other
+      // agents report their last words the same way (Hermes, Codex) or as
+      // `message`.
+      const finalText = toOneLine(payload.last_assistant_message ?? payload.message ?? "");
+      if (finalText) {
+        State.appendStep(agentId, finalText);
+        const t = State.tasks.find((x) => x.id === agentId);
+        if (t) t.finalLine = finalText;
+      }
+      Sound.play("finish");
+      // A card waiting for an answer is never covered by another alert.
+      if (focused && !State.pendingApproval) surface("finished", true);
+      else State.setPillBadge(agentId, "finished");
+      cancelStopTimer(agentId);
+      stopTimers.set(
+        agentId,
+        window.setTimeout(() => {
+          stopTimers.delete(agentId);
+          if (isExternalAgent) {
+            State.removeTask(agentId);
+          } else {
+            State.updateTask(agentId, "idle");
+            State.setPillBadge(agentId, null);
+          }
+        }, 5200),
+      );
       break;
     }
 
-    case "Stop": {
-      const t = State.tasks.find((x) => x.id === agentId);
-      const said = oneLine(
-        payload.last_assistant_message ?? payload.assistant_response ?? t?.lastReply ?? payload.message ?? "",
-      );
-      if (t) t.lastReply = undefined;
-      if (said) {
-        State.appendStep(agentId, said);
-        if (t) t.finalShown = true;
-      }
-      stopped.add(agentId);
-      announce("finished");
+    case "Interrupt":
+      // Codex: the user stopped the turn. Back to idle, nothing to celebrate.
+      supersedeStop();
+      State.updateTask(agentId, "idle");
+      State.setPillBadge(agentId, null);
       break;
-    }
 
     case "StopFailure":
-      stopped.add(agentId);
-      announce("error");
+      supersedeStop();
+      State.updateTask(agentId, "error");
+      Sound.play("error");
+      if (focused && !State.pendingApproval) surface("error", true);
+      else State.setPillBadge(agentId, "error");
       break;
 
-    case "SessionEnd": {
-      // `agent -p` sends no Stop: the session's end is the turn's end. A
-      // session that did nothing (a composer opened and closed) stays quiet.
-      const worked = (State.tasks.find((t) => t.id === agentId)?.steps.length ?? 0) > 0;
-      if (!stopped.has(agentId) && worked) {
-        const status = `${payload.final_status ?? ""} ${payload.reason ?? ""}`;
-        announce(/error|fail/i.test(status) ? "error" : "finished");
-      }
-      stopped.delete(agentId);
-      // The pill goes once the island had time to show how it ended.
-      const prev = removals.get(agentId);
-      if (prev != null) window.clearTimeout(prev);
-      removals.set(agentId, window.setTimeout(() => {
-        removals.delete(agentId);
+    case "SessionEnd":
+      // Nothing left for the timer to do, and it must not outlive the session: a
+      // pill recreated within 5.2 s would be removed by it.
+      cancelStopTimer(agentId);
+      State.clearSessionDiffs(agentId);
+      if (isExternalAgent) {
         State.removeTask(agentId);
-        State.notify();
-      }, (State.settings.autoCloseInterval + 1) * 1000));
+      } else {
+        State.updateTask(agentId, "idle");
+        clearSession(agentId);
+      }
       break;
-    }
 
     case "SubagentStart":
-      State.appendStep(agentId, "+ subagent");
+      State.appendStep(agentId, t("+ subagent"));
       break;
 
     case "SubagentStop":
-      State.appendStep(agentId, "• subagent done");
+      State.appendStep(agentId, t("• subagent done"));
       break;
-
-    case QUESTION_TOOL: {
-      const requestId = payload.request_id ?? "";
-      const questions = parseQuestions(payload.tool_input ?? {});
-      if (isExternalAgent || !questions) {
-        if (requestId) void Bridge.approvalDecline(requestId);
-        break;
-      }
-      holdCard(
-        {
-          taskId: agentId,
-          requestId,
-          sessionId: payload.session_id ?? "",
-          tool: QUESTION_TOOL,
-          command: questions[0].question,
-          questions,
-        },
-        "question",
-        "question",
-      );
-      break;
-    }
 
     case "PermissionRequest": {
+      // Only Claude Code and the agents the relay can answer for (Codex, Copilot
+      // CLI, Muse Code — same as the Mac) get a card. Anyone else's request is
+      // declined at once, so the agent asks in its own terminal.
+      if (isExternalAgent && !APPROVAL_AGENTS.has(validAgent!)) {
+        if (payload.request_id) void Bridge.approvalDecline(payload.request_id);
+        break;
+      }
+
       const requestId = payload.request_id ?? "";
-      const tool = payload.tool_name ?? "Tool";
-      const input = payload.tool_input ?? {};
-      // Reaching here means the question was sent back to the terminal: it
-      // stays there rather than turning into an Allow/Deny card.
-      if (tool === QUESTION_TOOL) {
+      // One card, one request. A second one must never quietly replace the first
+      // — that would leave a human staring at request B while request A waits for
+      // a decision nobody can give. Hand it straight back to the terminal.
+      if (State.pendingApproval && State.pendingApproval.requestId !== requestId) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      // Cursor and Kiro send every shell command here (the relay renames their
-      // events). Kiro has no PreToolUse step for it, so the ticker gets it here;
-      // Cursor already sent one. Unless approvals for agents are on, the command
-      // runs as the agent decides.
-      if (isExternalAgent) {
-        ensurePill();
-        State.updateTask(agentId, "working");
-        if (validAgent !== "cursor") State.appendStep(agentId, stepLabel(tool, input));
-        surface("overview", false);
-        if (!State.settings.agentApprovals) {
-          if (requestId) void Bridge.approvalDecline(requestId);
-          break;
-        }
-      }
-      holdCard(
-        {
-          taskId: agentId,
-          requestId,
-          sessionId: payload.session_id ?? "",
-          tool,
-          command: approvalTarget(tool, input),
-        },
-        "approval",
-        "approval",
-      );
+      ensurePill();
+      supersedeStop();
+      if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
+      const tool = payload.tool_name ?? "Tool";
+      const input = payload.tool_input ?? {};
+      // Claude Code asking a question is not a permission to grant: the island
+      // shows the options and sends back the one that was picked. Only Claude
+      // Code asks questions this way.
+      const questions = isExternalAgent ? null : askedQuestions(tool, input);
+      const view = questions ? "question" : "approval";
+      // The card always comes up, even over another pill or an island that is
+      // already open: its pill comes to the front, and the one you were on
+      // comes back once you answer (Mac #117, #120).
+      State.beginApproval({
+        requestId,
+        sessionId,
+        pillId: agentId,
+        tool,
+        command: approvalTarget(tool, input),
+        ...(questions ? { questions } : {}),
+      });
+      // The relay's short ack window closes in 800 ms; everything below this
+      // line is synchronous, so the card really is up by the time it lands.
+      if (requestId) void Bridge.approvalAck(requestId);
+      State.updateTask(agentId, view);
+      Sound.play(view);
+      // Any agent's card (Claude Code, Codex, Copilot CLI, Muse Code) comes up
+      // the same way: beginApproval brought its pill to the front.
+      island.alert(view);
+      // Coucou answers within 108 s or not at all; after that the terminal has
+      // taken over and the card would be lying.
+      pendingTimeout = window.setTimeout(() => {
+        pendingTimeout = null;
+        dropPendingCard(island);
+      }, 110_000);
       break;
     }
 

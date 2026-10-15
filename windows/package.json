@@ -1,14 +1,14 @@
 {
   "name": "coucou-windows",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "node --import ./tests/setup.mjs --test \"tests/**/*.test.mjs\"",
     "icons": "node scripts/gen-icons.mjs",
-    "check": "node scripts/todos.check.ts && node scripts/outfits.check.ts && node scripts/desktop.check.ts && node scripts/steps.check.ts && node scripts/shortcuts.check.ts",
     "tauri": "tauri",
     "predev": "cargo build --release -p coucou-hook",
     "prebuild": "cargo build --release -p coucou-hook",

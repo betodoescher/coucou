@@ -1,226 +1,360 @@
-// Mochi on the desktop — the page of his own little window (desktop.rs).
-// Port of DesktopBotView in DesktopMochi.swift.
+// The desktop Mochi's own window (mochi.html): draws him, and turns clicks and
+// drags on him into pokes, flights home, the wardrobe and a new spot. Port of
+// DesktopBotView + the mouse half of DesktopMochiController (DesktopMochi.swift).
 //
-// The island decides what he feels and wears and sends it here; this page
-// draws him, follows the cursor with his eyes, falls asleep when nothing goes
-// on, and turns clicks and drags into requests for the island and Rust.
+// What he shows comes from the island (DESKTOP_EVENTS.state), where he is from
+// Rust. The page draws only while the window is on screen, at 30 fps awake
+// like the Mac, and a few frames a second asleep — with no cursor polling at
+// all while he sleeps.
 
-import { invoke } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
-import type { BotEmoteName, BotStateName } from "../core/layout";
+import { Bridge, emitToWindow, onEvent, type DesktopMode } from "../core/bridge";
+import type { BotEmoteName } from "../core/layout";
+import { Sound } from "../core/sound";
 import { BotEngine } from "../mochi/engine";
-import type { Worn } from "../mochi/outfits";
-import { shouldSleep, type DesktopState } from "./logic";
+import {
+  DESKTOP_EVENTS, DOUBLE_CLICK_MS, DRAG_THRESHOLD, PANEL_SIZE, agentActive, gaze, isOverBody,
+  layerDragTopLeft, lookOrigin, pointerDistance, shouldSleep, windowDragTopLeft,
+  type DesktopSnapshot, type Point,
+} from "../mochi/desktop-logic";
 
-/** Same numbers as src-tauri/src/desktop.rs. */
-const WIN_W = 128;
-const WIN_H = 144;
-const BODY_X = 64;
-const BODY_Y = 90;
-const HIT_R = 36;
-/** Mochi's canvas inside the window, as the island draws him. */
-const BOT_W = 96;
-const OVERHANG = 40;
+const ISLAND = "island";
 
-const DOUBLE_CLICK_MS = 300;
-const DRAG_THRESHOLD = 4;
+/**
+ * Width Mochi is drawn at. The engine's body radius is 0.3 × width, so this
+ * gives the 28.8 px body the hit test uses, and leaves room around him for
+ * hats, hands and hearts inside the 120 px window.
+ */
+const DRAW_W = PANEL_SIZE * 0.8;
+const SIDE = (PANEL_SIZE - DRAW_W) / 2;
+/** Frame pacing: TimelineView(minimumInterval: 1/30) awake; asleep, barely. */
+const AWAKE_FRAME_MS = 1000 / 30;
+const ASLEEP_FRAME_MS = 250;
 
-const canvas = document.getElementById("mochi") as HTMLCanvasElement;
-const engine = new BotEngine();
-engine.particleOverhang = OVERHANG;
+class DesktopMochi {
+  private engine = new BotEngine();
+  private canvas: HTMLCanvasElement;
+  private mode: DesktopMode = "off";
 
-let cursorPoll = false;
-let visible = false;
-/** What the island says Mochi is up to. */
-let state: BotStateName = "idle";
-let sleeping = false;
-let dizzyUntil = 0;
-let lastActive = performance.now();
-/** Cursor in window coordinates; null when we cannot know where it is. */
-let cursor: { x: number; y: number } | null = null;
+  private snap: DesktopSnapshot = {
+    state: "idle", outfit: "none", soundEnabled: true, soundVolume: 0.12, paused: false, dancing: false,
+  };
 
-const toIsland = (event: string, payload?: unknown) => void emitTo("island", event, payload ?? null);
+  private visible = false;
+  private asleep = false;
+  /** Whether the island has told us anything yet. */
+  private informed = false;
+  private lastAgentActive = performance.now();
+  /** Pointer in window coordinates, and when the page last heard of it. */
+  private cursor: Point | null = null;
+  private lastPointer = -Infinity;
 
-function resize() {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(WIN_W * dpr);
-  canvas.height = Math.round(WIN_H * dpr);
-  canvas.style.width = `${WIN_W}px`;
-  canvas.style.height = `${WIN_H}px`;
-}
+  private timer: number | null = null;
+  private lastDraw = 0;
 
-function wake() {
-  lastActive = performance.now();
-  if (sleeping) {
-    sleeping = false;
-    applyState();
-  }
-}
+  /** Canvas offset inside the window: non-zero only in a layer-shell drag. */
+  private offset: Point = { x: 0, y: 0 };
+  private press: { client: Point; screen: Point } | null = null;
+  private dragging = false;
+  /** Window's top-left corner when the drag began (mode's space). */
+  private dragOrigin: Point | null = null;
+  private dragTopLeft: Point | null = null;
+  private moveFrame = false;
+  private pokeTimer: number | null = null;
 
-function applyState() {
-  if (performance.now() < dizzyUntil) return;
-  engine.setState(sleeping ? "sleeping" : state);
-}
-
-// ── Frame loop: 30 fps awake, 10 asleep, nothing while hidden ────────────────
-
-let timer = 0;
-let lastFrame = performance.now();
-
-function frame() {
-  timer = 0;
-  if (!visible) return;
-  const now = performance.now();
-  const dt = Math.min(0.1, (now - lastFrame) / 1000);
-  lastFrame = now;
-
-  const distance = cursor ? Math.hypot(cursor.x - BODY_X, cursor.y - BODY_Y) : Infinity;
-  const ds: DesktopState = { state, idleFor: (now - lastActive) / 1000, mouseDistance: distance };
-  if (!sleeping && shouldSleep(ds)) {
-    sleeping = true;
-    applyState();
-  } else if (sleeping && !shouldSleep(ds)) {
-    wake();
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
+    const dpr = this.dpr();
+    canvas.width = Math.round(PANEL_SIZE * dpr);
+    canvas.height = Math.round(PANEL_SIZE * dpr);
+    this.engine.particleOverhang = 0;
+    this.engine.setState("idle", true);
+    // Three pokes: dizzy, and the island shows the confused view (as on macOS).
+    this.engine.onDizzy = () => void emitToWindow(ISLAND, DESKTOP_EVENTS.dizzy);
+    this.wireInput();
   }
 
-  engine.lookX = cursor ? Math.tanh((cursor.x - BODY_X) / 260) : 0;
-  engine.lookY = cursor ? -Math.tanh((cursor.y - BODY_Y) / 200) : 0;
-  engine.update(dt);
+  async start() {
+    void Sound.preload();
+    const info = await Bridge.desktopInfo();
+    if (info) this.mode = info.mode;
 
-  const ctx = canvas.getContext("2d");
-  if (ctx) {
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, WIN_W, WIN_H);
-    ctx.translate((WIN_W - BOT_W) / 2, 0);
-    engine.draw(ctx, BOT_W, BOT_W + OVERHANG);
+    await onEvent<DesktopSnapshot>(DESKTOP_EVENTS.state, (s) => this.onSnapshot(s));
+    await onEvent<{ emote: BotEmoteName; duration: number }>(DESKTOP_EVENTS.emote, (e) => {
+      this.lastAgentActive = performance.now();
+      this.wake();
+      this.engine.triggerEmote(e.emote, e.duration);
+      this.schedule();
+    });
+    await onEvent<Point>(DESKTOP_EVENTS.cursor, (p) => this.notePointer(p));
+    await onEvent<boolean>(DESKTOP_EVENTS.visible, (on) => this.setVisible(on));
+    await onEvent<string>(DESKTOP_EVENTS.flight, (kind) => {
+      // He fades in on the way out of the island (alphaValue 0 → 1 on macOS).
+      if (kind !== "out") return;
+      this.canvas.style.transition = "none";
+      this.canvas.style.opacity = "0";
+      void this.canvas.offsetWidth;
+      this.canvas.style.transition = "";
+      this.canvas.style.opacity = "1";
+    });
+    await emitToWindow(ISLAND, DESKTOP_EVENTS.ready);
   }
-  schedule();
-}
 
-function schedule() {
-  if (timer || !visible) return;
-  timer = window.setTimeout(frame, sleeping ? 100 : 33);
-}
+  // ── State ───────────────────────────────────────────────────────────────────
 
-// ── Input ─────────────────────────────────────────────────────────────────────
-
-let press: { x: number; y: number } | null = null;
-let dragging = false;
-let dragBusy = false;
-let clickTimer = 0;
-
-const onBody = (x: number, y: number) => Math.hypot(x - BODY_X, y - BODY_Y) <= HIT_R;
-
-window.addEventListener("mousedown", (e) => {
-  if (e.button !== 0 || !onBody(e.clientX, e.clientY)) return;
-  wake();
-  press = { x: e.screenX, y: e.screenY };
-  dragging = false;
-});
-
-window.addEventListener("mousemove", (e) => {
-  // Without Rust's cursor poll (Linux) the page only knows the cursor while it
-  // is over Mochi, which is enough to look at it and to wake up.
-  if (!cursorPoll) cursor = { x: e.clientX, y: e.clientY };
-  if (!press) return;
-  if (!dragging) {
-    if (Math.hypot(e.screenX - press.x, e.screenY - press.y) < DRAG_THRESHOLD) return;
-    dragging = true;
-    void invoke("desktop_mochi_drag_start", { x: e.screenX, y: e.screenY });
-    return;
+  private onSnapshot(s: DesktopSnapshot) {
+    this.snap = s;
+    this.informed = true;
+    Sound.setEnabled(s.soundEnabled);
+    Sound.setVolume(s.soundVolume);
+    if (agentActive(s.state)) this.lastAgentActive = performance.now();
+    if (!this.asleep) this.engine.setState(s.state);
+    this.updateSleep(performance.now());
+    this.schedule();
   }
-  if (cursorPoll || dragBusy) return;
-  dragBusy = true;
-  void invoke("desktop_mochi_drag", { x: e.screenX, y: e.screenY }).finally(() => { dragBusy = false; });
-});
 
-window.addEventListener("mouseup", () => {
-  if (!press) return;
-  press = null;
-  if (dragging) {
-    dragging = false;
-    if (!cursorPoll) void invoke("desktop_mochi_drop");
-    return;
-  }
-  if (clickTimer) {
-    // Double-click: fly home.
-    window.clearTimeout(clickTimer);
-    clickTimer = 0;
-    toIsland("desktop-sound", "peek");
-    void invoke("desktop_mochi_home");
-    return;
-  }
-  clickTimer = window.setTimeout(() => {
-    clickTimer = 0;
-    engine.slap();
-  }, DOUBLE_CLICK_MS);
-});
-
-window.addEventListener("mouseleave", () => {
-  if (!cursorPoll) cursor = null;
-});
-
-window.addEventListener("contextmenu", (e) => {
-  e.preventDefault();
-  if (!onBody(e.clientX, e.clientY)) return;
-  wake();
-  toIsland("desktop-wardrobe");
-});
-
-engine.onDizzy = () => {
-  dizzyUntil = performance.now() + 3300;
-  engine.setState("dizzy");
-  toIsland("desktop-sound", "dizzy");
-  window.setTimeout(() => {
-    dizzyUntil = 0;
-    applyState();
-    engine.triggerEmote("happy");
-  }, 3300);
-};
-
-// ── Events ────────────────────────────────────────────────────────────────────
-
-async function main() {
-  resize();
-  window.addEventListener("resize", resize);
-
-  const boot = await invoke<{ cursorPoll: boolean }>("boot").catch(() => null);
-  cursorPoll = boot?.cursorPoll ?? false;
-
-  await listen<{ state: BotStateName; outfit: Worn; animated: boolean }>("desktop-state", (e) => {
-    const next = e.payload.state;
-    if (next !== state && next !== "idle" && next !== "sleeping") wake();
-    state = next;
-    engine.setOutfit(e.payload.outfit, e.payload.animated);
-    applyState();
-  });
-
-  await listen<BotEmoteName>("desktop-emote", (e) => {
-    wake();
-    engine.triggerEmote(e.payload);
-  });
-
-  await listen<{ visible: boolean; landed: boolean }>("desktop-mochi", (e) => {
-    visible = e.payload.visible;
-    if (visible) {
-      lastFrame = performance.now();
-      schedule();
+  private setVisible(on: boolean) {
+    this.visible = on;
+    if (on) {
+      // The two pages may have started in either order: ask again if needed.
+      if (!this.informed) void emitToWindow(ISLAND, DESKTOP_EVENTS.ready);
+      // Landing counts as something going on: he looks around for a while.
+      this.lastAgentActive = performance.now();
+      this.asleep = false;
+      this.engine.setState(this.snap.state, true);
+      this.engine.setOutfit(this.snap.outfit, false);
+      this.schedule();
+      return;
     }
-    if (e.payload.landed) {
-      wake();
-      engine.triggerEmote("happy");
+    this.cancelPoke();
+    this.press = null;
+    this.dragging = false;
+    this.setOffset({ x: 0, y: 0 });
+    if (this.timer != null) window.clearTimeout(this.timer);
+    this.timer = null;
+    Sound.idle();
+  }
+
+  private updateSleep(now: number) {
+    if (!this.visible) return;
+    // Dancing keeps him up: asleep he would bounce at a few frames a second.
+    if (this.snap.dancing && !this.snap.paused) this.lastAgentActive = now;
+    const distance = pointerDistance(this.mode === "poll", this.cursor, now - this.lastPointer);
+    const sleep =
+      !this.dragging &&
+      (this.snap.paused || shouldSleep((now - this.lastAgentActive) / 1000, distance));
+    if (sleep === this.asleep) return;
+    this.asleep = sleep;
+    this.engine.setState(sleep ? "sleeping" : this.snap.state);
+    // Asleep, Rust stops the cursor poll; his whole little window then listens
+    // for the pointer, and the first move over it wakes him.
+    void Bridge.desktopSetAsleep(sleep);
+    if (sleep) Sound.idle();
+    this.schedule();
+  }
+
+  private wake() {
+    if (!this.asleep) return;
+    this.updateSleep(performance.now());
+  }
+
+  /** Pointer in window coordinates: his eyes, and waking up. */
+  private notePointer(p: Point) {
+    this.cursor = p;
+    this.lastPointer = performance.now();
+    if (this.asleep) this.wake();
+    this.schedule();
+  }
+
+  // ── Frames ──────────────────────────────────────────────────────────────────
+
+  private schedule() {
+    if (this.timer != null || !this.visible) return;
+    const wait = this.asleep ? ASLEEP_FRAME_MS : AWAKE_FRAME_MS;
+    const due = Math.max(0, this.lastDraw + wait - performance.now());
+    this.timer = window.setTimeout(() => {
+      // Awake, frames line up with the display; asleep, a timer is enough.
+      if (this.asleep) {
+        this.timer = null;
+        this.frame(performance.now());
+      } else {
+        requestAnimationFrame((t) => {
+          this.timer = null;
+          this.frame(t);
+        });
+      }
+    }, due);
+  }
+
+  private frame(now: number) {
+    if (!this.visible) return;
+    const dt = Math.min(0.05, Math.max(0, (now - this.lastDraw) / 1000));
+    this.lastDraw = now;
+    this.updateSleep(now);
+    this.draw(dt, now);
+    this.schedule();
+  }
+
+  private draw(dt: number, now: number) {
+    const ctx = this.canvas.getContext("2d");
+    if (!ctx) return;
+    const engine = this.engine;
+    engine.setOutfit(this.snap.outfit, true);
+    if (!this.asleep) {
+      // Windows: the global cursor. Linux: only while the pointer is over him.
+      const fresh = this.mode === "poll" || now - this.lastPointer < 1500;
+      const g = this.cursor && fresh ? gaze(lookOrigin(0, 0), this.cursor) : { lookX: 0, lookY: 0 };
+      engine.lookX = g.lookX;
+      engine.lookY = g.lookY;
     }
-  });
+    // Dances while Spotify plays, by the compact island's rules.
+    engine.setDancing(this.snap.dancing && !this.asleep);
+    engine.update(dt);
+    const dpr = this.dpr();
+    ctx.setTransform(dpr, 0, 0, dpr, SIDE * dpr, 0);
+    ctx.clearRect(-SIDE, 0, PANEL_SIZE, PANEL_SIZE);
+    ctx.save();
+    engine.applyDance(ctx, DRAW_W, PANEL_SIZE);
+    engine.draw(ctx, DRAW_W, PANEL_SIZE);
+    ctx.restore();
+  }
 
-  await listen<{ x: number; y: number }>("desktop-cursor", (e) => {
-    cursor = e.payload;
-    if (Math.hypot(cursor.x - BODY_X, cursor.y - BODY_Y) < 150 && sleeping) wake();
-  });
+  private dpr(): number {
+    return Math.min(2, window.devicePixelRatio || 1);
+  }
 
-  // Whichever page loads first, the other one hears about it.
-  await listen("desktop-ping", () => toIsland("desktop-hello"));
-  toIsland("desktop-hello");
+  // ── Input ───────────────────────────────────────────────────────────────────
+
+  private local(e: MouseEvent): Point {
+    return { x: e.clientX - this.offset.x, y: e.clientY - this.offset.y };
+  }
+
+  private wireInput() {
+    document.addEventListener("pointerdown", (e) => {
+      Sound.resume();
+      if (e.button !== 0 || !isOverBody(this.local(e))) return;
+      this.press = { client: this.local(e), screen: { x: e.screenX, y: e.screenY } };
+      this.dragging = false;
+      try {
+        document.documentElement.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture is a nicety */
+      }
+    });
+
+    document.addEventListener("pointermove", (e) => {
+      if (!this.dragging) this.notePointer(this.local(e));
+      const press = this.press;
+      if (!press) return;
+      if (!this.dragging) {
+        const l = this.local(e);
+        if (Math.hypot(l.x - press.client.x, l.y - press.client.y) <= DRAG_THRESHOLD) return;
+        this.beginDrag();
+      }
+      this.dragTo(e);
+    });
+
+    document.addEventListener("pointerup", (e) => {
+      const press = this.press;
+      this.press = null;
+      if (!press) return;
+      if (this.dragging) {
+        this.endDrag(e);
+        return;
+      }
+      // Single click → poke, once it is clear it isn't a double click.
+      this.cancelPoke();
+      this.pokeTimer = window.setTimeout(() => {
+        this.pokeTimer = null;
+        this.lastAgentActive = performance.now();
+        this.wake();
+        this.engine.slap();
+        this.schedule();
+      }, DOUBLE_CLICK_MS);
+    });
+
+    document.addEventListener("dblclick", (e) => {
+      if (!isOverBody(this.local(e))) return;
+      this.cancelPoke();
+      void emitToWindow(ISLAND, DESKTOP_EVENTS.home);
+    });
+
+    document.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (isOverBody(this.local(e))) void emitToWindow(ISLAND, DESKTOP_EVENTS.wardrobe);
+    });
+
+    document.addEventListener("pointerleave", () => {
+      if (this.mode !== "poll" && !this.dragging) this.cursor = null;
+    });
+
+    // A layer-shell drag stretches the window over the display; once it is
+    // back to its own size, so is the canvas.
+    window.addEventListener("resize", () => {
+      if (!this.dragging && window.innerWidth <= PANEL_SIZE + 20) this.setOffset({ x: 0, y: 0 });
+    });
+  }
+
+  private cancelPoke() {
+    if (this.pokeTimer != null) window.clearTimeout(this.pokeTimer);
+    this.pokeTimer = null;
+  }
+
+  private beginDrag() {
+    this.dragging = true;
+    this.cancelPoke();
+    this.dragOrigin = null;
+    this.dragTopLeft = null;
+    void Bridge.desktopDragBegin().then((pos) => {
+      if (!pos) {
+        this.dragging = false;
+        this.press = null;
+        return;
+      }
+      this.dragOrigin = { x: pos[0], y: pos[1] };
+    });
+  }
+
+  /** Linux: the page drives the drag. Windows: the cursor poll carries him. */
+  private dragTo(e: PointerEvent) {
+    const origin = this.dragOrigin;
+    const press = this.press;
+    if (!origin || !press || this.mode === "poll") return;
+    if (this.mode === "layer") {
+      const applied = window.innerWidth > PANEL_SIZE + 20;
+      const topLeft = layerDragTopLeft(origin, { x: e.clientX, y: e.clientY }, press.client, applied);
+      this.dragTopLeft = topLeft;
+      this.setOffset(applied ? topLeft : { x: topLeft.x - origin.x, y: topLeft.y - origin.y });
+      return;
+    }
+    if (this.mode === "window") {
+      const topLeft = windowDragTopLeft(origin, { x: e.screenX, y: e.screenY }, press.screen, this.dpr());
+      this.dragTopLeft = topLeft;
+      if (this.moveFrame) return;
+      this.moveFrame = true;
+      requestAnimationFrame(() => {
+        this.moveFrame = false;
+        const p = this.dragTopLeft;
+        if (p && this.dragging) void Bridge.desktopDragMove(p.x, p.y);
+      });
+    }
+  }
+
+  private endDrag(e: PointerEvent) {
+    this.dragTo(e);
+    this.dragging = false;
+    const topLeft = this.dragTopLeft;
+    this.dragOrigin = null;
+    this.dragTopLeft = null;
+    if (this.mode === "poll" || !topLeft) return;
+    void Bridge.desktopDragEnd(Math.round(topLeft.x), Math.round(topLeft.y));
+  }
+
+  private setOffset(p: Point) {
+    this.offset = p;
+    this.canvas.style.left = `${p.x}px`;
+    this.canvas.style.top = `${p.y}px`;
+  }
 }
 
-void main();
+const canvas = document.getElementById("mochi");
+if (canvas instanceof HTMLCanvasElement) void new DesktopMochi(canvas).start();

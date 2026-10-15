@@ -22,7 +22,7 @@ export type IslandViewName =
   | "note"
   | "settings"
   | "greeting"
-  | "todos"
+  | "recap"
   | "wardrobe";
 
 export type BotStateName =
@@ -88,8 +88,10 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // Height follows the rows (todosHeight); Mochi stays by the chips and the field.
-  todos: { height: 178, botX: 46, botY: 86, botDiameter: 40, agentMode: "none" },
+  // Mac: 160. The extra 24 hold the two lines with top agent, project, busiest
+  // day, longest session, permissions and questions, which the Mac card leaves
+  // to the shared image.
+  recap: { height: 184, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   wardrobe: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "none" },
 };
 
@@ -97,24 +99,18 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
 // dropped the whole sequence — Mochi included — is drawn by src/upload, which
 // owns its own constants (USC) straight from UploadSequenceEngine.swift.
 
+/** The question view with options to pick from: room for two rows of them. */
+export const QUESTION_PICKER_H = 200;
+
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
-/** To-do view grows with its rows, then scrolls. */
-export function todosHeight(rows: number): number {
-  return Math.min(300, 150 + Math.max(1, rows) * 28);
-}
-
-/** The question card with options to pick from; without them it keeps its usual height. */
-export const ASK_HEIGHT = 214;
-
-/** `count` is the chat's messages, the to-do view's rows, or 1 for a question with options. */
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
-  count = 0,
+  chatCount = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -124,11 +120,7 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h =
-        view === "prompt" ? chatPromptHeight(count)
-        : view === "todos" ? todosHeight(count)
-        : view === "question" && count > 0 ? ASK_HEIGHT
-        : VIEW_LAYOUTS[view].height;
+      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

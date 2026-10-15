@@ -7,7 +7,8 @@
 import { Ease, lerp, type EaseFn } from "../core/anim";
 import { Sound } from "../core/sound";
 import type { BotEmoteName, BotStateName } from "../core/layout";
-import { PUMPKIN_BODY, drawOutfit, makeHead, type Head, type Worn } from "./outfits";
+import { PUMPKIN_BODY, drawOutfitBehind, drawOutfitFront, makeHead } from "./outfits";
+import type { Outfit } from "./wardrobe";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -37,7 +38,8 @@ interface Tween {
 
 type PropKey =
   | "yaw" | "pitch" | "roll" | "tilt" | "open" | "sx" | "sy"
-  | "oy" | "ox" | "tint" | "morph" | "hands" | "blush" | "es" | "badgeS" | "outfitPresence";
+  | "oy" | "ox" | "tint" | "morph" | "hands" | "blush" | "es" | "badgeS"
+  | "outfitPresence";
 
 interface BotStateCfg {
   color: RGB;
@@ -163,6 +165,33 @@ function starPath(x: CanvasRenderingContext2D, ro: number, ri: number) {
 
 const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 
+// ── Dance (BotEngine.applyDance, macOS) ──────────────────────────────────────
+
+/** The dance fades in over 0.3 s and out over 0.5 s. */
+export function stepDanceLevel(level: number, dancing: boolean, dt: number): number {
+  const target = dancing ? 1 : 0;
+  if (level < target) return Math.min(target, level + dt / 0.3);
+  if (level > target) return Math.max(target, level - dt / 0.5);
+  return level;
+}
+
+/**
+ * The 112-BPM bounce at `seconds`, for a body of radius R and a dance `level`
+ * (0…1): a sideways sway, a hop, a tilt, and a squash on landing.
+ */
+export function danceTransform(seconds: number, level: number, R: number) {
+  const beat = (seconds * 112) / 60;
+  const hop = Math.abs(Math.sin(Math.PI * beat));
+  const land = Math.pow(1 - hop, 6);
+  return {
+    dx: 0.08 * R * Math.sin(Math.PI * beat) * level,
+    dy: -0.2 * R * hop * level,
+    rotate: 0.1 * Math.sin(Math.PI * beat) * level,
+    sx: 1 + 0.045 * land * level,
+    sy: 1 - 0.06 * land * level,
+  };
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────────
 
 export class BotEngine {
@@ -175,21 +204,31 @@ export class BotEngine {
   sx = 1; sy = 1; oy = 0; ox = 0;
   tint = 0; morph = 0; hands = 0; blush = 0; es = 1; badgeS = 0;
 
-  /** What Mochi wears, and how far it has arrived (0 gone … 1 on). */
-  outfit: Worn = "none";
+  // Outfit (the main Mochi only — minis never wear one). `outfit` is what is
+  // drawn; it changes only once the previous one has left.
+  outfit: Outfit = "none";
+  /** 0 = gone, 1 = fully on. */
   outfitPresence = 0;
-  private outfitTarget: Worn = "none";
-  /** Spring lag of an outfit's floppy parts (pompoms, hat tips, scarf end). */
-  private physDx = 0; private physDy = 0;
-  private physVx = 0; private physVy = 0;
-  private physTx = 0; private physTy = 0;
-  private prevYaw = 0; private prevOy = 0; private prevRoll = 0;
+  private outfitTarget: Outfit = "none";
+
+  // Spring lag of the soft parts (pompoms, hat tips, scarf end), −1…1.
+  physDx = 0;
+  physDy = 0;
+  private physVx = 0;
+  private physVy = 0;
+  private prevYaw = 0;
+  private prevOy = 0;
+  private prevRoll = 0;
 
   // Targets
   tgYaw = 0; tgPitch = 0; tgTilt = 0; tgSy = 1; tgSx = 1; tgEs = 1;
 
   /** Extra canvas height above the body so hearts can fly out without clipping. */
   particleOverhang = 0;
+
+  /** Dancing to music; `dancingLevel` follows it, 0→1 in 0.3 s, 1→0 in 0.5 s. */
+  isDancing = false;
+  dancingLevel = 0;
 
   // Mouth spring (fraction of R)
   slotH = 0; slotHTarget = 0; slotHVel = 0; isChewing = false;
@@ -330,39 +369,7 @@ export class BotEngine {
 
   doRoll(durationMs: number, turns: number) {
     this.roll = 0;
-    this.anim("roll", [[Math.PI * 2 * turns, durationMs, Ease.inOut]], () => {
-      this.roll = 0;
-      if (this.wearing) this.squash();
-    });
-  }
-
-  /** An outfit is on: rolls turn the whole of Mochi instead of sliding his eyes. */
-  get wearing(): boolean {
-    return this.outfit !== "none" && this.outfitPresence > 0.05;
-  }
-
-  /** Changes take the old outfit off, then put the new one on. */
-  setOutfit(next: Worn, animated = true) {
-    if (next === this.outfitTarget) return;
-    this.outfitTarget = next;
-    this.tweens.delete("outfitPresence");
-    this.locks.delete("outfitPresence");
-    const putOn = () => this.anim("outfitPresence", [[1, 350, Ease.inOut]], () => this.squash());
-    if (!animated) {
-      this.outfit = next;
-      this.outfitPresence = next === "none" ? 0 : 1;
-    } else if (next === "none") {
-      this.anim("outfitPresence", [[0, 180, Ease.inOut]], () => { this.outfit = "none"; });
-    } else if (this.outfit === "none") {
-      this.outfit = next;
-      this.outfitPresence = 0;
-      putOn();
-    } else {
-      this.anim("outfitPresence", [[0, 180, Ease.inOut]], () => {
-        this.outfit = next;
-        putOn();
-      });
-    }
+    this.anim("roll", [[Math.PI * 2 * turns, durationMs, Ease.inOut]], () => { this.roll = 0; });
   }
 
   /** Peek wave — the "coucou". Timings from BotEngine.greet(). */
@@ -442,7 +449,6 @@ export class BotEngine {
         this.anim("es", [[1.25, 120, Ease.out], [1, 500, Ease.inOut]]);
         break;
       case "proud":
-        if (this.wearing) this.squash();
         this.emit("star", 5);
         this.anim("tilt", [
           [-0.14, 220, Ease.out], [-0.14, (duration - 0.5) * 1000, Ease.lin], [0, 280, Ease.inOut],
@@ -500,6 +506,37 @@ export class BotEngine {
     this.morph = 0;
   }
 
+  /**
+   * Dresses Mochi. Animated: the old outfit leaves (180 ms), the new one drops
+   * in (350 ms) and Mochi does a little squash — BotEngine.setOutfit on macOS.
+   */
+  setOutfit(next: Outfit, animated = true) {
+    if (next === this.outfitTarget) return;
+    this.outfitTarget = next;
+    this.tweens.delete("outfitPresence");
+    this.locks.delete("outfitPresence");
+    const enter = () => {
+      this.outfit = next;
+      this.anim("outfitPresence", [[1, 350, Ease.inOut]], () => this.squash());
+    };
+    if (!animated) {
+      this.outfit = next;
+      this.outfitPresence = next !== "none" ? 1 : 0;
+    } else if (next === "none") {
+      this.anim("outfitPresence", [[0, 180, Ease.inOut]], () => { this.outfit = "none"; });
+    } else if (this.outfit === "none") {
+      this.outfitPresence = 0;
+      enter();
+    } else {
+      this.anim("outfitPresence", [[0, 180, Ease.inOut]], enter);
+    }
+  }
+
+  /** Wearing something visible: the body then turns as one piece when it rolls. */
+  private get rigidRoll(): boolean {
+    return !this.isMini && this.outfit !== "none" && this.outfitPresence > 0.05;
+  }
+
   /** True while anything is still moving — lets the island stop its RAF loop. */
   get busy(): boolean {
     return (
@@ -507,6 +544,7 @@ export class BotEngine {
       this.particles.length > 0 ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
       this.isMini ||
+      this.isDancing || this.dancingLevel > 0.001 ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
       Math.abs(this.tgPitch - this.pitch) > 0.002 ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -514,13 +552,10 @@ export class BotEngine {
       Math.abs(this.tgSx - this.sx) > 0.002 ||
       Math.abs(this.tgEs - this.es) > 0.002 ||
       this.slotH > 0.001 || Math.abs(this.slotHVel) > 0.001 ||
-      (this.outfit !== "none" && (
-        Math.abs(this.physVx) > 0.005 || Math.abs(this.physVy) > 0.005 ||
-        Math.abs(this.physTx - this.physDx) > 0.002 || Math.abs(this.physTy - this.physDy) > 0.002
-      )) ||
       Math.abs(this.col[0] - this.colT[0]) > 0.003 ||
       Math.abs(this.col[1] - this.colT[1]) > 0.003 ||
-      Math.abs(this.col[2] - this.colT[2]) > 0.003
+      Math.abs(this.col[2] - this.colT[2]) > 0.003 ||
+      (this.outfit !== "none" && (Math.abs(this.physVx) > 0.01 || Math.abs(this.physVy) > 0.01))
     );
   }
 
@@ -649,23 +684,26 @@ export class BotEngine {
     this.slotHVel += acc * dt;
     this.slotH = Math.max(0, this.slotH + this.slotHVel * dt);
 
+    this.dancingLevel = stepDanceLevel(this.dancingLevel, this.isDancing, dt);
+
+    // Soft-part spring: lags behind head turns, hops and rolls (stiffness 60, damping 9).
     if (dt > 0) {
       const yawVel = (this.yaw - this.prevYaw) / dt;
       const oyVel = (this.oy - this.prevOy) / dt;
-      const rollVel = (this.roll - this.prevRoll) / dt;
-      this.prevYaw = this.yaw;
-      this.prevOy = this.oy;
-      this.prevRoll = this.roll;
-      const centrifugal = this.wearing ? rollVel * 0.18 : 0;
-      this.physTx = Math.max(-1, Math.min(1, -yawVel * 0.35 - this.tilt * 2 + centrifugal));
-      this.physTy = Math.max(-1, Math.min(1, oyVel * 0.5));
-      const stiff = 60;
-      const damp = 9;
-      this.physVx += (stiff * (this.physTx - this.physDx) - damp * this.physVx) * dt;
-      this.physVy += (stiff * (this.physTy - this.physDy) - damp * this.physVy) * dt;
+      // A finished roll snaps from 2π·turns back to 0: that jump is not motion.
+      const dRoll = this.roll - this.prevRoll;
+      const rollVel = Math.abs(dRoll) > Math.PI ? 0 : dRoll / dt;
+      const centrifugal = this.rigidRoll ? rollVel * 0.18 : 0;
+      const tDx = Math.max(-1, Math.min(1, -yawVel * 0.35 - this.tilt * 2 + centrifugal));
+      const tDy = Math.max(-1, Math.min(1, oyVel * 0.5));
+      this.physVx += (60 * (tDx - this.physDx) - 9 * this.physVx) * dt;
+      this.physVy += (60 * (tDy - this.physDy) - 9 * this.physVy) * dt;
       this.physDx += this.physVx * dt;
       this.physDy += this.physVy * dt;
     }
+    this.prevYaw = this.yaw;
+    this.prevOy = this.oy;
+    this.prevRoll = this.roll;
 
     this.lastTime = n;
   }
@@ -704,6 +742,28 @@ export class BotEngine {
     }
   }
 
+  // ── Dancing ─────────────────────────────────────────────────────────────────
+
+  setDancing(dancing: boolean) {
+    if (this.isDancing !== dancing) this.isDancing = dancing;
+  }
+
+  /**
+   * Applies the dance bounce and sway around the bottom of the body. Call it on
+   * a saved context, before draw(), with the same size (BotEngine.applyDance).
+   */
+  applyDance(x: CanvasRenderingContext2D, W: number, H: number) {
+    if (this.dancingLevel <= 0.001) return;
+    const R = W * 0.3;
+    const px = W / 2 + this.ox * R;
+    const py = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06 + R * 0.88;
+    const d = danceTransform(now(), this.dancingLevel, R);
+    x.translate(px + d.dx, py + d.dy);
+    x.rotate(d.rotate);
+    x.scale(d.sx, d.sy);
+    x.translate(-px, -py);
+  }
+
   // ── Draw ────────────────────────────────────────────────────────────────────
 
   /**
@@ -717,11 +777,10 @@ export class BotEngine {
     const cx = W / 2 + this.ox * R;
     const cy = H / 2 + this.particleOverhang / 2 + this.oy * R + R * 0.06;
 
-    // With an outfit on, a roll turns the whole of Mochi so the hat stays put on
-    // his head; without one, the roll is the eyes sliding round the sphere.
-    const rigidRoll = this.wearing && !this.isMini && Math.abs(this.roll) > 0.001;
+    // With an outfit on, a roll turns the whole character — hat included — as
+    // one piece instead of rolling the eyes over the body (BotCanvasView, macOS).
     x.save();
-    if (rigidRoll) {
+    if (this.rigidRoll && Math.abs(this.roll) > 0.001) {
       x.translate(cx, cy);
       x.rotate(this.roll);
       x.translate(-cx, -cy);
@@ -734,16 +793,13 @@ export class BotEngine {
     if (this.tilt !== 0) x.rotate(this.tilt);
     x.scale(this.sx, this.sy);
 
-    const outfit = this.isMini ? "none" : this.outfit;
-    const outfitFade = 1 - Math.min(1, Math.max(0, (this.morph - 0.3) / 0.2));
-    const head: Head | null = outfit !== "none" && outfitFade > 0.01
-      ? makeHead(R, this.yaw, this.pitch, this.physDx, this.physDy)
-      : null;
-    if (head && outfit !== "none") drawOutfit(x, "back", outfit, head, this.outfitPresence, outfitFade);
+    const dressed = !this.isMini && this.outfit !== "none";
+    const head = dressed ? makeHead(R, this.yaw, this.pitch, this.physDx, this.physDy) : null;
+    const outfitState = { presence: this.outfitPresence, morph: this.morph };
+    if (head) drawOutfitBehind(x, this.outfit, head, outfitState);
 
     const body = this.bodyPath(rx, ry, R);
-    const pumpkin = outfit === "pumpkin" ? Math.min(1, this.outfitPresence) * outfitFade : 0;
-    this.drawBody(x, body, R, rx, ry, pumpkin);
+    this.drawBody(x, body, R, rx, ry);
 
     const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
     if (blushVal > 0.01) {
@@ -761,7 +817,8 @@ export class BotEngine {
 
     this.drawEyes(x, body, R, rx, ry);
     if (this.morph > 0.05) this.drawMouth(x, body, R);
-    if (head && outfit !== "none") drawOutfit(x, "front", outfit, head, this.outfitPresence, outfitFade);
+
+    if (head) drawOutfitFront(x, this.outfit, head, outfitState);
 
     x.restore();
     x.restore();
@@ -800,30 +857,36 @@ export class BotEngine {
     return p;
   }
 
-  /** `pumpkin` 0…1 blends the body to the pumpkin outfit's orange. */
-  private drawBody(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number, pumpkin = 0) {
-    if (this.bodyColor && pumpkin < 1) {
+  /** How much of the pumpkin's orange shows on the body (it comes and goes with the outfit). */
+  private get pumpkinAlpha(): number {
+    if (this.isMini || this.outfit !== "pumpkin") return 0;
+    return Math.min(1, this.outfitPresence * 2.5) * (1 - this.morph);
+  }
+
+  private drawBody(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
+    const pumpkin = this.pumpkinAlpha;
+    if (this.bodyColor) {
       // Mini bots: flat solid fill — no gradient, no reflection, no highlight
       x.fillStyle = rgba(this.bodyColor, 1);
       x.fill(body);
-      if (pumpkin <= 0) return;
-    }
-    if (!this.bodyColor) {
+      if (pumpkin <= 0.001) return;
+    } else {
       const g = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
       g.addColorStop(0, rgba(BASE_TOP));
       g.addColorStop(1, rgba(BASE_BOTTOM));
       x.fillStyle = g;
       x.fill(body);
     }
-    if (pumpkin > 0) {
+    x.save();
+    if (pumpkin > 0.001) {
       const pg = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
       pg.addColorStop(0, PUMPKIN_BODY[0]);
       pg.addColorStop(1, PUMPKIN_BODY[1]);
-      x.save();
       x.globalAlpha = pumpkin;
       x.fillStyle = pg;
       x.fill(body);
-      x.restore();
+      // A flat-coloured body only gets the shading while it is a pumpkin.
+      x.globalAlpha = this.bodyColor ? pumpkin : 1;
     }
 
     const effectiveTint = this.tint * (1 - this.morph);
@@ -847,10 +910,15 @@ export class BotEngine {
     hl.addColorStop(1, "rgba(255,255,255,0)");
     x.fillStyle = hl;
     x.fill(body);
+    x.restore();
   }
 
   private drawEyes(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
     let shape: EyeShape = this.eyeOverride ?? this.cfg.eye;
+    // Dancing: happy eyes in the calm states.
+    if (this.isDancing && this.dancingLevel > 0.15 && !this.isMini && (this.state === "idle" || this.state === "finished")) {
+      shape = "happy";
+    }
     if (this.morph > 0.5) {
       if (this.isChewing) shape = "happy";
       else if (this.slotHTarget > 0.05 || this.slotH > 0.1) shape = "cup";
@@ -864,7 +932,8 @@ export class BotEngine {
 
     for (const sd of [-1, 1]) {
       const eyeYaw = sd * EYE_SP + this.yaw;
-      let eyePitch = EYE_P + this.pitch + (this.wearing && !this.isMini ? 0 : this.roll);
+      // Rolling with an outfit on, the whole body turns: the eyes must not roll again.
+      let eyePitch = EYE_P + this.pitch + (this.rigidRoll ? 0 : this.roll);
       eyePitch = (((eyePitch + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
       const cp = Math.cos(eyePitch);
       if (Math.cos(eyeYaw) * cp <= 0.04) continue;

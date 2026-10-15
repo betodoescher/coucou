@@ -8,14 +8,16 @@
 // Nothing is polled until its key exists in the Credential Manager, and no
 // request goes anywhere the user has not configured.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::Notify;
 
+use crate::github::{self, GitHubActivity, GitHubPulse};
 use crate::island::WINDOW_LABEL;
 use crate::log;
 use crate::secrets;
@@ -39,8 +41,6 @@ pub struct IntegrationEvent {
     pub success: bool,
     pub label: String,
     pub detail: Option<String>,
-    /// Open the island on it rather than only badging the pill.
-    pub alert: bool,
 }
 
 fn emit(app: &AppHandle, update: IntegrationUpdate) {
@@ -68,29 +68,20 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_vercel", 5, 30, poll_vercel);
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
-    spawn(app.clone(), "integration_github", 7, 120, poll_github);
+    spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn_github_loops(app.clone());
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
-    spawn(app.clone(), "integration_notion", 9, 300, poll_notion);
-    spawn(app, WEATHER_ID, 4, 1800, poll_weather);
+    spawn(app, "integration_notion", 9, 300, poll_notion);
 }
 
 /// True when the user has this integration switched on in settings.
 fn enabled(app: &AppHandle, id: &str) -> bool {
-    if id == WEATHER_ID {
-        return !weather_city(app).is_empty();
-    }
     app.try_state::<crate::Shared>()
         .map(|shared| {
             let settings = shared.settings.lock().unwrap();
             settings.active_integrations.iter().any(|x| x == id)
         })
         .unwrap_or(false)
-}
-
-fn weather_city(app: &AppHandle) -> String {
-    app.try_state::<crate::Shared>()
-        .map(|shared| shared.settings.lock().unwrap().weather_city.trim().to_string())
-        .unwrap_or_default()
 }
 
 fn spawn<F, Fut>(app: AppHandle, id: &'static str, delay_secs: u64, every_secs: u64, poll: F)
@@ -119,13 +110,16 @@ where
 pub async fn poll_once(app: AppHandle, id: &str) {
     match id {
         "integration_stripe" => poll_stripe(app).await,
-        "integration_github" => poll_github(app).await,
+        "integration_github" => {
+            wake_github_pulse();
+            github_refresh_if_stale("activity");
+            poll_github(app).await
+        }
         "integration_vercel" => poll_vercel(app).await,
         "integration_n8n" => poll_n8n(app).await,
         "integration_resend" => poll_resend(app).await,
         "integration_notion" => poll_notion(app).await,
         "integration_calcom" => poll_calcom(app).await,
-        WEATHER_ID => poll_weather(app).await,
         _ => {}
     }
 }
@@ -146,11 +140,13 @@ fn is_new(key: &'static str, id: &str) -> bool {
     }
 }
 
+/// The card's error line, in the interface language (i18n.rs);
+/// `unauthorised_hint` comes translated.
 fn status_error(code: u16, unauthorised_hint: &str) -> String {
     match code {
-        401 => "Invalid API key (401)".into(),
-        403 => unauthorised_hint.into(),
-        _ => format!("API error {code}"),
+        401 => crate::i18n::t("Invalid API key (401)"),
+        403 => unauthorised_hint.to_string(),
+        _ => crate::i18n::tf("API error {code}", &[("code", &code.to_string())]),
     }
 }
 
@@ -193,7 +189,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(status_error(code, "Use a secret key (sk_live_… not pk_live_…)")),
+                error: Some(status_error(code, &crate::i18n::t("Use a secret key (sk_live_… not pk_live_…)"))),
                 event: None,
             });
             return;
@@ -202,7 +198,7 @@ async fn poll_stripe(app: AppHandle) {
             emit(&app, IntegrationUpdate {
                 id: "integration_stripe",
                 data: json!({}),
-                error: Some(format!("No connection: {e}")),
+                error: Some(crate::i18n::tf("No connection: {error}", &[("error", &e.to_string())])),
                 event: None,
             });
             return;
@@ -262,7 +258,7 @@ async fn poll_stripe(app: AppHandle) {
                 let cents = payments[0].get("amount").and_then(Value::as_i64).unwrap_or(0);
                 format!("{:.2}", cents as f64 / 100.0)
             });
-        Some(IntegrationEvent { success: true, label, detail: None, alert: false })
+        Some(IntegrationEvent { success: true, label, detail: None })
     } else {
         None
     };
@@ -276,364 +272,6 @@ async fn poll_stripe(app: AppHandle) {
 }
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
-
-/// What changes minute to minute, in one round trip: the user's open PRs with
-/// their head commit's CI, the default branch CI of their most recently pushed
-/// repositories, and the PRs waiting for their review.
-const GITHUB_PULSE_QUERY: &str = r#"query {
-  viewer {
-    pullRequests(states: OPEN, first: 20, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      nodes {
-        number title url isDraft reviewDecision updatedAt
-        repository { name nameWithOwner }
-        commits(last: 1) { nodes { commit { oid statusCheckRollup { state } } } }
-      }
-    }
-    repositories(first: 10, ownerAffiliations: [OWNER], orderBy: {field: PUSHED_AT, direction: DESC}) {
-      nodes {
-        name nameWithOwner url isArchived
-        defaultBranchRef { name target { ... on Commit { oid statusCheckRollup { state } } } }
-      }
-    }
-  }
-  reviewRequested: search(query: "is:pr is:open review-requested:@me archived:false", type: ISSUE, first: 20) {
-    nodes { ... on PullRequest { number title url isDraft createdAt repository { name nameWithOwner } } }
-  }
-}"#;
-
-const GITHUB_ACTIVITY_QUERY: &str = r#"query {
-  viewer { contributionsCollection { contributionCalendar {
-    totalContributions
-    weeks { contributionDays { date contributionCount contributionLevel weekday } }
-  } } }
-}"#;
-
-/// The contribution grid only moves a few times a day.
-const GITHUB_ACTIVITY_EVERY: Duration = Duration::from_secs(1800);
-const GITHUB_ACTIVITY_WEEKS: usize = 23;
-
-/// The previous pulse, to tell a CI that just turned red or green from one that
-/// has been that colour for a while.
-static GITHUB_PULSE: Mutex<Option<Value>> = Mutex::new(None);
-static GITHUB_ACTIVITY: Mutex<Option<(std::time::Instant, Value)>> = Mutex::new(None);
-
-async fn github_graphql(http: &reqwest::Client, token: &str, query: &str) -> Option<Value> {
-    let r = http
-        .post("https://api.github.com/graphql")
-        .header("Authorization", format!("Bearer {token}"))
-        .header("User-Agent", "Coucou")
-        .json(&json!({ "query": query }))
-        .send()
-        .await
-        .ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    let v: Value = r.json().await.ok()?;
-    v.get("data").filter(|d| d.is_object()).cloned()
-}
-
-fn ci_state(rollup: &Value) -> &'static str {
-    match rollup.get("state").and_then(Value::as_str) {
-        Some("PENDING" | "EXPECTED") => "pending",
-        Some("SUCCESS") => "success",
-        Some("ERROR" | "FAILURE") => "failure",
-        _ => "unknown",
-    }
-}
-
-fn review_state(decision: &Value) -> &'static str {
-    match decision.as_str() {
-        Some("APPROVED") => "approved",
-        Some("CHANGES_REQUESTED") => "changes",
-        Some("REVIEW_REQUIRED") => "pending",
-        _ => "",
-    }
-}
-
-/// The pulse as the card's rows. A missing piece is an empty list, never a failed poll.
-fn github_pulse(data: &Value) -> Value {
-    let nodes = |v: &Value| v.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
-    let viewer = &data["viewer"];
-
-    let mine: Vec<Value> = nodes(&viewer["pullRequests"])
-        .iter()
-        .filter_map(|p| {
-            let full = p["repository"]["nameWithOwner"].as_str()?;
-            let number = p["number"].as_i64()?;
-            let commit = &p["commits"]["nodes"][0]["commit"];
-            Some(json!({
-                "id": format!("{full}#{number}"),
-                "title": p["title"].as_str()?,
-                "repo": p["repository"]["name"].as_str().unwrap_or(full),
-                "number": number,
-                "url": p["url"].as_str()?,
-                "draft": p["isDraft"].as_bool().unwrap_or(false),
-                "review": review_state(&p["reviewDecision"]),
-                "ci": ci_state(&commit["statusCheckRollup"]),
-                "sha": commit["oid"].as_str().unwrap_or(""),
-                "createdAt": p["updatedAt"].as_str().unwrap_or(""),
-            }))
-        })
-        .collect();
-
-    let main_ci: Vec<Value> = nodes(&viewer["repositories"])
-        .iter()
-        .filter(|r| !r["isArchived"].as_bool().unwrap_or(false))
-        .filter_map(|r| {
-            let branch = r["defaultBranchRef"].as_object()?;
-            let target = &branch.get("target")?;
-            Some(json!({
-                "id": r["nameWithOwner"].as_str()?,
-                "repo": r["name"].as_str()?,
-                "url": r["url"].as_str()?,
-                "branch": branch.get("name").and_then(Value::as_str).unwrap_or("main"),
-                "ci": ci_state(&target["statusCheckRollup"]),
-                "sha": target["oid"].as_str().unwrap_or(""),
-            }))
-        })
-        .collect();
-
-    let reviews: Vec<Value> = nodes(&data["reviewRequested"])
-        .iter()
-        .filter_map(|p| {
-            let full = p["repository"]["nameWithOwner"].as_str()?;
-            let number = p["number"].as_i64()?;
-            Some(json!({
-                "id": format!("{full}#{number}"),
-                "title": p["title"].as_str()?,
-                "repo": p["repository"]["name"].as_str().unwrap_or(full),
-                "number": number,
-                "url": p["url"].as_str()?,
-                "draft": p["isDraft"].as_bool().unwrap_or(false),
-                "createdAt": p["createdAt"].as_str().unwrap_or(""),
-            }))
-        })
-        .collect();
-
-    json!({ "mine": mine, "mainCi": main_ci, "reviews": reviews })
-}
-
-/// What changed between two pulses, most urgent first: a CI that just failed
-/// (on a PR or a default branch), a new review request, then a PR whose CI just
-/// went green. Nothing on the first pulse, which only fills the card.
-fn github_pulse_event(old: Option<&Value>, new: &Value) -> Option<IntegrationEvent> {
-    let old = old?;
-    let list = |v: &Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
-    let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
-    let find = |l: &[Value], id: &Value| l.iter().find(|v| &v["id"] == id).cloned();
-
-    let (old_mine, old_main, old_reviews) = (list(old, "mine"), list(old, "mainCi"), list(old, "reviews"));
-    let mut failed = None;
-    let mut passed = None;
-    for pr in list(new, "mine") {
-        let ci = s(&pr, "ci");
-        let before = find(&old_mine, &pr["id"]);
-        let (fail, pass) = match before {
-            Some(b) if b["sha"] == pr["sha"] => {
-                let was = s(&b, "ci");
-                (ci == "failure" && was != "failure", ci == "success" && was == "pending")
-            }
-            // A new commit or a PR we had not seen: only a settled CI says anything.
-            _ => (ci == "failure", ci == "success"),
-        };
-        if fail && failed.is_none() {
-            failed = Some(pr);
-        } else if pass && passed.is_none() {
-            passed = Some(pr);
-        }
-    }
-    let main_failed = list(new, "mainCi").into_iter().find(|r| {
-        r["ci"] == "failure"
-            && find(&old_main, &r["id"]).is_none_or(|b| b["sha"] != r["sha"] || b["ci"] != "failure")
-    });
-    let review = list(new, "reviews").into_iter().find(|p| find(&old_reviews, &p["id"]).is_none());
-
-    let pr_label = |p: &Value| format!("{}#{}", s(p, "repo"), p["number"]);
-    if let Some(p) = failed {
-        return Some(IntegrationEvent {
-            success: false,
-            label: format!("CI failed · {}", pr_label(&p)),
-            detail: Some(s(&p, "title")),
-            alert: true,
-        });
-    }
-    if let Some(r) = main_failed {
-        return Some(IntegrationEvent {
-            success: false,
-            label: format!("CI failed · {}", s(&r, "repo")),
-            detail: Some(format!("{} branch", s(&r, "branch"))),
-            alert: true,
-        });
-    }
-    if let Some(p) = review {
-        return Some(IntegrationEvent {
-            success: true,
-            label: format!("Review requested · {}", s(&p, "repo")),
-            detail: Some(s(&p, "title")),
-            alert: true,
-        });
-    }
-    passed.map(|p| IntegrationEvent {
-        success: true,
-        label: format!("CI passed · {}", pr_label(&p)),
-        detail: Some(s(&p, "title")),
-        alert: false,
-    })
-}
-
-fn contribution_level(level: &Value) -> i64 {
-    match level.as_str() {
-        Some("FIRST_QUARTILE") => 1,
-        Some("SECOND_QUARTILE") => 2,
-        Some("THIRD_QUARTILE") => 3,
-        Some("FOURTH_QUARTILE") => 4,
-        _ => 0,
-    }
-}
-
-/// The year's total and the last weeks of the contribution calendar, oldest day first.
-fn github_activity(data: &Value) -> Option<Value> {
-    let calendar = &data["viewer"]["contributionsCollection"]["contributionCalendar"];
-    let weeks = calendar["weeks"].as_array()?;
-    let recent = &weeks[weeks.len().saturating_sub(GITHUB_ACTIVITY_WEEKS)..];
-    let days: Vec<Value> = recent
-        .iter()
-        .flat_map(|w| w["contributionDays"].as_array().cloned().unwrap_or_default())
-        .filter_map(|d| {
-            Some(json!({
-                "date": d["date"].as_str()?,
-                "count": d["contributionCount"].as_i64().unwrap_or(0),
-                "level": contribution_level(&d["contributionLevel"]),
-                "weekday": d["weekday"].as_i64().unwrap_or(0),
-            }))
-        })
-        .collect();
-    Some(json!({ "total": calendar["totalContributions"].as_i64().unwrap_or(0), "days": days }))
-}
-
-/// The cached grid, refetched once it is older than half an hour.
-async fn github_activity_cached(http: &reqwest::Client, token: &str) -> Value {
-    let cached = GITHUB_ACTIVITY.lock().unwrap().clone();
-    if let Some((at, ref v)) = cached {
-        if at.elapsed() < GITHUB_ACTIVITY_EVERY {
-            return v.clone();
-        }
-    }
-    match github_graphql(http, token, GITHUB_ACTIVITY_QUERY).await.as_ref().and_then(github_activity) {
-        Some(v) => {
-            *GITHUB_ACTIVITY.lock().unwrap() = Some((std::time::Instant::now(), v.clone()));
-            v
-        }
-        None => cached.map(|(_, v)| v).unwrap_or(Value::Null),
-    }
-}
-
-async fn github_get(http: &reqwest::Client, token: &str, url: &str) -> Option<Value> {
-    let r = http
-        .get(url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "Coucou")
-        .send()
-        .await
-        .ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    r.json().await.ok()
-}
-
-/// Search results as the card's rows: newest first.
-fn github_prs(search: Option<Value>) -> (Vec<Value>, i64) {
-    let Some(v) = search else { return (Vec::new(), 0) };
-    let total = v.get("total_count").and_then(Value::as_i64).unwrap_or(0);
-    let items = v
-        .get("items")
-        .and_then(Value::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(|i| {
-                    let repo = i.get("repository_url")?.as_str()?.rsplit('/').next()?.to_string();
-                    Some(json!({
-                        "id": i.get("id")?.as_i64()?.to_string(),
-                        "title": i.get("title")?.as_str()?,
-                        "repo": repo,
-                        "number": i.get("number")?.as_i64()?,
-                        "url": i.get("html_url")?.as_str()?,
-                        "createdAt": i.get("created_at")?.as_str()?,
-                    }))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    (items, total)
-}
-
-/// The pulse (the user's PRs and their CI, default branch CI, review requests),
-/// open PRs in their organisations and the contribution grid. A CI that turns
-/// red or a new review request opens the island; a CI that turns green or a new
-/// PR only badges.
-async fn poll_github_activity(http: &reqwest::Client, token: &str, login: &str) -> (Value, Option<IntegrationEvent>) {
-    let api = "https://api.github.com";
-    let orgs: Vec<String> = github_get(http, token, &format!("{api}/user/orgs?per_page=50"))
-        .await
-        .and_then(|v| v.as_array().cloned())
-        .map(|l| l.iter().filter_map(|o| o.get("login")?.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-
-    let pulse = github_graphql(http, token, GITHUB_PULSE_QUERY).await.map(|d| github_pulse(&d));
-    let pulse_event = pulse.as_ref().and_then(|new| {
-        let mut previous = GITHUB_PULSE.lock().unwrap();
-        let event = github_pulse_event(previous.as_ref(), new);
-        *previous = Some(new.clone());
-        event
-    });
-    let pulse = pulse.unwrap_or_else(|| json!({ "mine": [], "mainCi": [], "reviews": [] }));
-
-    let search = |q: String| format!("{api}/search/issues?q={}&sort=created&order=desc&per_page=5", q.replace(' ', "+"));
-    let scope = if orgs.is_empty() {
-        format!("user:{login}")
-    } else {
-        orgs.iter().map(|o| format!("org:{o}")).collect::<Vec<_>>().join(" ")
-    };
-    let (prs, open_prs) =
-        github_prs(github_get(http, token, &search(format!("is:pr is:open archived:false {scope}"))).await);
-
-    let activity = github_activity_cached(http, token).await;
-
-    // Checked on every poll so the first one only fills the card.
-    let pr_id = prs
-        .iter()
-        .filter_map(|v| v.get("id")?.as_str()?.parse::<i64>().ok())
-        .max()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
-    let new_pr = !pr_id.is_empty() && is_new("github_pr", &pr_id);
-
-    let event = pulse_event.or_else(|| {
-        let p = prs.iter().find(|v| v["id"] == pr_id.as_str()).filter(|_| new_pr)?;
-        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-        Some(IntegrationEvent {
-            success: true,
-            label: format!("New PR · {}", s("repo")),
-            detail: Some(s("title")),
-            alert: false,
-        })
-    });
-
-    (
-        json!({
-            "mine": pulse["mine"],
-            "mainCi": pulse["mainCi"],
-            "reviews": pulse["reviews"],
-            "prs": prs,
-            "openPrs": open_prs,
-            "activity": activity,
-        }),
-        event,
-    )
-}
 
 async fn poll_github(app: AppHandle) {
     let Some(token) = secrets::get("github-token") else { return };
@@ -651,7 +289,7 @@ async fn poll_github(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_github",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks the needed scope")),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Token lacks the needed scope"))),
             event: None,
         });
         return;
@@ -686,11 +324,244 @@ async fn poll_github(app: AppHandle) {
         _ => 0,
     };
 
-    let login = json.get("login").and_then(Value::as_str).unwrap_or("").to_string();
-    let (mut data, event) = poll_github_activity(&http, &token, &login).await;
-    data["totalRepos"] = json!(public + private);
-    data["totalStars"] = json!(stars);
-    emit(&app, IntegrationUpdate { id: "integration_github", data, error: None, event });
+    GITHUB.cache.lock().unwrap().stats = Some((public + private, stars));
+    emit_github(&app);
+}
+
+// ── GitHub pulse and activity (GithubPoller.swift) ────────────────────────────
+//
+// Two more loops next to the stats above, with the Mac cadence: the pulse (my
+// pull requests and their CI, reviews waiting for me, default-branch CI) 10 s
+// after launch, then every 60 s while some CI is running and every 5 min
+// otherwise; the contribution calendar 15 s after launch, then every 30 min.
+// Neither touches the network while the pill is off or Coucou is paused, and
+// the island wakes them when the card is opened on stale data.
+//
+// All three results are kept here and always sent together, so one poll never
+// wipes what another one reported.
+
+const GITHUB_ID: &str = "integration_github";
+
+#[derive(Default)]
+struct GitHubCache {
+    /// (repositories, stars)
+    stats: Option<(i64, i64)>,
+    pulse: Option<GitHubPulse>,
+    activity: Option<GitHubActivity>,
+}
+
+struct GitHubLoops {
+    cache: Mutex<GitHubCache>,
+    /// Bumped when the token changes: a response for the old token is dropped.
+    generation: AtomicU64,
+    pulse_wake: Notify,
+    activity_wake: Notify,
+    pulse_busy: AtomicBool,
+    activity_busy: AtomicBool,
+}
+
+static GITHUB: std::sync::LazyLock<GitHubLoops> = std::sync::LazyLock::new(|| GitHubLoops {
+    cache: Mutex::new(GitHubCache::default()),
+    generation: AtomicU64::new(0),
+    pulse_wake: Notify::new(),
+    activity_wake: Notify::new(),
+    pulse_busy: AtomicBool::new(false),
+    activity_busy: AtomicBool::new(false),
+});
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// What the island's GitHub card receives: whichever of the three is known.
+fn github_card_data(cache: &GitHubCache) -> Value {
+    let mut data = serde_json::Map::new();
+    if let Some((repos, stars)) = cache.stats {
+        data.insert("totalRepos".into(), json!(repos));
+        data.insert("totalStars".into(), json!(stars));
+    }
+    if let Some(pulse) = &cache.pulse {
+        data.insert("pulse".into(), serde_json::to_value(pulse).unwrap_or(Value::Null));
+    }
+    if let Some(activity) = &cache.activity {
+        data.insert("activity".into(), serde_json::to_value(activity).unwrap_or(Value::Null));
+    }
+    Value::Object(data)
+}
+
+fn emit_github(app: &AppHandle) {
+    let data = github_card_data(&GITHUB.cache.lock().unwrap());
+    emit(app, IntegrationUpdate { id: GITHUB_ID, data, error: None, event: None });
+}
+
+fn spawn_github_loops(app: AppHandle) {
+    let pulse_app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut wait = Duration::from_secs(10);
+        loop {
+            // Sleeps for `wait`, or less when the island asks for fresh data.
+            let _ = tokio::time::timeout(wait, GITHUB.pulse_wake.notified()).await;
+            let pending = run_github_pulse(&pulse_app).await;
+            wait = Duration::from_secs(if pending { 60 } else { 300 });
+        }
+    });
+    tauri::async_runtime::spawn(async move {
+        let mut wait = Duration::from_secs(15);
+        loop {
+            let _ = tokio::time::timeout(wait, GITHUB.activity_wake.notified()).await;
+            run_github_activity(&app).await;
+            wait = Duration::from_secs(1800);
+        }
+    });
+}
+
+/// One authenticated GraphQL call. Partial errors are logged (as a count) and the
+/// data parsed anyway; only a response without `data` is dropped.
+async fn github_graphql(token: &str, query: &str, what: &str) -> Option<Value> {
+    let response = client()
+        .post("https://api.github.com/graphql")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .header("User-Agent", "Coucou")
+        .json(&json!({ "query": query }))
+        .send()
+        .await;
+    let Ok(response) = response else {
+        log::line(format!("github {what}: no connection"));
+        return None;
+    };
+    if !response.status().is_success() {
+        log::line(format!("github {what} HTTP {}", response.status().as_u16()));
+        return None;
+    }
+    let root: Value = response.json().await.ok()?;
+    let errors = github::graphql_error_count(&root);
+    if errors > 0 {
+        log::line(format!("github {what} GraphQL errors: {errors}"));
+    }
+    root.get("data").filter(|d| d.is_object())?;
+    Some(root)
+}
+
+/// Returns whether some CI is still running, which sets the next interval.
+async fn run_github_pulse(app: &AppHandle) -> bool {
+    if PAUSED.load(Ordering::Relaxed) || !enabled(app, GITHUB_ID) {
+        return false;
+    }
+    let Some(token) = secrets::get("github-token") else { return false };
+    let generation = GITHUB.generation.load(Ordering::SeqCst);
+    GITHUB.pulse_busy.store(true, Ordering::SeqCst);
+    let root = github_graphql(&token, github::PULSE_QUERY, "pulse").await;
+    GITHUB.pulse_busy.store(false, Ordering::SeqCst);
+    let Some(pulse) = root.and_then(|r| GitHubPulse::parse(&r, now_ms())) else { return false };
+    let pending = pulse.has_pending();
+
+    let events = {
+        let mut cache = GITHUB.cache.lock().unwrap();
+        // The token changed while this was in flight: it answers for someone else.
+        if GITHUB.generation.load(Ordering::SeqCst) != generation {
+            return pending;
+        }
+        let events = GitHubPulse::events(cache.pulse.as_ref(), &pulse);
+        cache.pulse = Some(pulse);
+        events
+    };
+    emit_github(app);
+    if !events.is_empty() {
+        let _ = app.emit_to(WINDOW_LABEL, "github-alerts", &events);
+    }
+    pending
+}
+
+async fn run_github_activity(app: &AppHandle) {
+    if PAUSED.load(Ordering::Relaxed) || !enabled(app, GITHUB_ID) {
+        return;
+    }
+    let Some(token) = secrets::get("github-token") else { return };
+    let generation = GITHUB.generation.load(Ordering::SeqCst);
+    GITHUB.activity_busy.store(true, Ordering::SeqCst);
+    let root = github_graphql(&token, github::ACTIVITY_QUERY, "activity").await;
+    GITHUB.activity_busy.store(false, Ordering::SeqCst);
+    let Some(activity) = root.and_then(|r| GitHubActivity::parse(&r, now_ms())) else { return };
+    {
+        let mut cache = GITHUB.cache.lock().unwrap();
+        if GITHUB.generation.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        cache.activity = Some(activity);
+    }
+    emit_github(app);
+}
+
+fn wake_github_pulse() {
+    if !GITHUB.pulse_busy.load(Ordering::SeqCst) {
+        GITHUB.pulse_wake.notify_one();
+    }
+}
+
+/// The card was opened: fetch now if what it shows is older than the Mac's
+/// limits (1 min for the pulse, 5 min for the activity grid). No-op while a
+/// request is already in flight.
+pub fn github_refresh_if_stale(section: &str) {
+    let now = now_ms();
+    let cache = GITHUB.cache.lock().unwrap();
+    match section {
+        "pulse" => {
+            let fetched = cache.pulse.as_ref().map(|p| p.fetched_at);
+            if !GITHUB.pulse_busy.load(Ordering::SeqCst) && github::is_stale(fetched, now, 60) {
+                GITHUB.pulse_wake.notify_one();
+            }
+        }
+        "activity" => {
+            let fetched = cache.activity.as_ref().map(|a| a.fetched_at);
+            if !GITHUB.activity_busy.load(Ordering::SeqCst) && github::is_stale(fetched, now, 300) {
+                GITHUB.activity_wake.notify_one();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The GitHub token was saved or removed: forget what the old one fetched, drop
+/// its requests still in flight, and fetch again right away.
+pub fn github_token_changed(app: &AppHandle) {
+    GITHUB.generation.fetch_add(1, Ordering::SeqCst);
+    let has_token = secrets::get("github-token").is_some();
+    {
+        let mut cache = GITHUB.cache.lock().unwrap();
+        cache.pulse = None;
+        cache.activity = None;
+        if !has_token {
+            cache.stats = None;
+        }
+    }
+    emit_github(app);
+    GITHUB.pulse_wake.notify_one();
+    GITHUB.activity_wake.notify_one();
+    if has_token && !PAUSED.load(Ordering::Relaxed) && enabled(app, GITHUB_ID) {
+        tauri::async_runtime::spawn(poll_github(app.clone()));
+    }
+}
+
+/// Switching the pill off forgets the pulse, so switching it back on starts
+/// silent instead of alerting on everything that changed in between.
+pub fn settings_saved(app: &AppHandle, active_integrations: &[String]) {
+    if active_integrations.iter().any(|id| id == GITHUB_ID) {
+        return;
+    }
+    let had_data = {
+        let mut cache = GITHUB.cache.lock().unwrap();
+        let had = cache.pulse.is_some() || cache.activity.is_some();
+        cache.pulse = None;
+        cache.activity = None;
+        had
+    };
+    if had_data {
+        emit_github(app);
+    }
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────────────
@@ -708,7 +579,7 @@ async fn poll_vercel(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_vercel",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Token lacks access")),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Token lacks access"))),
             event: None,
         });
         return;
@@ -754,7 +625,6 @@ async fn poll_vercel(app: AppHandle) {
             success,
             label: latest.get("projectName")?.as_str()?.to_string(),
             detail: None,
-            alert: false,
         })
     });
 
@@ -781,7 +651,7 @@ async fn poll_resend(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_resend",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Key lacks access"))),
             event: None,
         });
         return;
@@ -843,7 +713,7 @@ async fn poll_notion(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_notion",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Integration lacks access")),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Integration lacks access"))),
             event: None,
         });
         return;
@@ -930,7 +800,7 @@ async fn poll_calcom(app: AppHandle) {
         emit(&app, IntegrationUpdate {
             id: "integration_calcom",
             data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Key lacks access")),
+            error: Some(status_error(response.status().as_u16(), &crate::i18n::t("Key lacks access"))),
             event: None,
         });
         return;
@@ -974,123 +844,6 @@ async fn poll_calcom(app: AppHandle) {
         error: None,
         event: None,
     });
-}
-
-// ── Weather (Open-Meteo, no key) ──────────────────────────────────────────────
-
-const WEATHER_ID: &str = "weather";
-
-/// The city last geocoded: (what the user typed, display name, lat, lon).
-static GEO: Mutex<Option<(String, String, f64, f64)>> = Mutex::new(None);
-
-async fn poll_weather(app: AppHandle) {
-    let city = weather_city(&app);
-    if city.is_empty() || PAUSED.load(Ordering::Relaxed) {
-        return;
-    }
-    let http = client();
-    let cached = GEO.lock().unwrap().clone().filter(|g| g.0 == city);
-    let (name, lat, lon) = match cached {
-        Some((_, name, lat, lon)) => (name, lat, lon),
-        None => {
-            let mut place = None;
-            for (query, qualifier) in geo_queries(&city) {
-                let found = http
-                    .get("https://geocoding-api.open-meteo.com/v1/search")
-                    .query(&[("name", query.as_str()), ("count", "10"), ("format", "json")])
-                    .send()
-                    .await;
-                let Ok(found) = found else { return };
-                let json: Value = found.json().await.unwrap_or(json!({}));
-                place = pick_place(&json, qualifier.as_deref());
-                if place.is_some() {
-                    break;
-                }
-            }
-            let Some((name, lat, lon)) = place else {
-                emit(&app, IntegrationUpdate {
-                    id: WEATHER_ID,
-                    data: json!({}),
-                    error: Some(format!("City not found: {city}")),
-                    event: None,
-                });
-                return;
-            };
-            *GEO.lock().unwrap() = Some((city.clone(), name.clone(), lat, lon));
-            (name, lat, lon)
-        }
-    };
-
-    let response = http
-        .get("https://api.open-meteo.com/v1/forecast")
-        .query(&[
-            ("latitude", lat.to_string()),
-            ("longitude", lon.to_string()),
-            ("current", "temperature_2m,weather_code,is_day".into()),
-            ("daily", "temperature_2m_max,temperature_2m_min,precipitation_probability_max".into()),
-            ("timezone", "auto".into()),
-            ("forecast_days", "1".into()),
-        ])
-        .send()
-        .await;
-    let Ok(response) = response else { return };
-    if !response.status().is_success() {
-        emit(&app, IntegrationUpdate {
-            id: WEATHER_ID,
-            data: json!({}),
-            error: Some(status_error(response.status().as_u16(), "Weather unavailable")),
-            event: None,
-        });
-        return;
-    }
-    let json: Value = response.json().await.unwrap_or(json!({}));
-    emit(&app, IntegrationUpdate { id: WEATHER_ID, data: weather_data(&name, &json), error: None, event: None });
-}
-
-/// Open-Meteo only matches English country names, and a state only after a
-/// comma: "São Paulo, Brasil" and "Florianópolis SC" find nothing. So: the text
-/// as typed, then the city alone with the rest kept to pick among the results.
-fn geo_queries(city: &str) -> Vec<(String, Option<String>)> {
-    let mut out = vec![(city.to_string(), None)];
-    if let Some((name, rest)) = city.split_once(',') {
-        out.push((name.trim().to_string(), Some(rest.trim().to_string())));
-    } else if let Some((name, last)) = city.rsplit_once(' ') {
-        out.push((name.trim().to_string(), Some(last.trim().to_string())));
-    }
-    out
-}
-
-/// The first result, or the first whose state or country matches `qualifier`
-/// ("SC" = Santa Catarina by initials, "Brasil", "BR", "Santa Catarina").
-fn pick_place(json: &Value, qualifier: Option<&str>) -> Option<(String, f64, f64)> {
-    let results = json.get("results")?.as_array()?;
-    let matches = |place: &Value| {
-        let Some(q) = qualifier.map(str::to_lowercase).filter(|q| !q.is_empty()) else { return false };
-        let field = |k: &str| place.get(k).and_then(Value::as_str).unwrap_or("").to_lowercase();
-        let admin1 = field("admin1");
-        let initials: String = admin1.split_whitespace().filter_map(|w| w.chars().next()).collect();
-        [admin1.clone(), initials, field("country"), field("country_code")].contains(&q)
-    };
-    let place = results.iter().find(|p| matches(p)).or_else(|| results.first())?;
-    Some((
-        place.get("name")?.as_str()?.to_string(),
-        place.get("latitude")?.as_f64()?,
-        place.get("longitude")?.as_f64()?,
-    ))
-}
-
-fn weather_data(city: &str, json: &Value) -> Value {
-    let current = json.get("current").cloned().unwrap_or(json!({}));
-    let daily = |key: &str| json.get("daily").and_then(|d| d.get(key)).and_then(|v| v.get(0)).cloned();
-    json!({
-        "city": city,
-        "temp": current.get("temperature_2m"),
-        "code": current.get("weather_code"),
-        "isDay": current.get("is_day").and_then(Value::as_i64).map(|d| d == 1),
-        "max": daily("temperature_2m_max"),
-        "min": daily("temperature_2m_min"),
-        "rain": daily("precipitation_probability_max"),
-    })
 }
 
 // ── n8n ───────────────────────────────────────────────────────────────────────
@@ -1152,7 +905,7 @@ async fn poll_n8n(app: AppHandle) {
         format!("{base}/rest/executions/{id}?includeData=true"),
         format!("{base}/rest/executions/{id}"),
     ];
-    let mut name = "Workflow".to_string();
+    let mut name = crate::i18n::t("Workflow");
     let mut detail = None;
     for url in &detail_urls {
         let Ok(response) = http.get(url).header("X-N8N-API-KEY", &key).header("Accept", "application/json").send().await
@@ -1168,8 +921,8 @@ async fn poll_n8n(app: AppHandle) {
             .and_then(|w| w.get("name"))
             .and_then(Value::as_str)
             .or_else(|| json.get("name").and_then(Value::as_str))
-            .unwrap_or("Workflow")
-            .to_string();
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::i18n::t("Workflow"));
         detail = n8n_detail(&json, success);
         break;
     }
@@ -1179,7 +932,7 @@ async fn poll_n8n(app: AppHandle) {
         id: "integration_n8n",
         data: json!({ "workflow": name, "status": status }),
         error: None,
-        event: Some(IntegrationEvent { success, label: name, detail, alert: false }),
+        event: Some(IntegrationEvent { success, label: name, detail }),
     });
 }
 
@@ -1257,126 +1010,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn weather_reads_open_meteo_shapes() {
-        let geo = json!({ "results": [
-            { "name": "Florianópolis", "admin1": "Acre", "country_code": "BR", "latitude": -9.0, "longitude": -70.0 },
-            { "name": "Florianópolis", "admin1": "Santa Catarina", "country_code": "BR", "latitude": -27.6, "longitude": -48.5 },
-        ] });
-        assert_eq!(pick_place(&geo, Some("SC")).unwrap().1, -27.6);
-        assert_eq!(pick_place(&geo, Some("santa catarina")).unwrap().1, -27.6);
-        assert_eq!(pick_place(&geo, None).unwrap().1, -9.0);
-        assert_eq!(pick_place(&geo, Some("Brasil")).unwrap().1, -9.0);
-        assert_eq!(pick_place(&json!({}), None), None);
-
-        assert_eq!(geo_queries("Florianópolis SC")[1], ("Florianópolis".into(), Some("SC".into())));
-        assert_eq!(geo_queries("São Paulo, Brasil")[1], ("São Paulo".into(), Some("Brasil".into())));
-        assert_eq!(geo_queries("Lisboa").len(), 1);
-
-        let forecast = json!({
-            "current": { "temperature_2m": 24.3, "weather_code": 2, "is_day": 1 },
-            "daily": {
-                "temperature_2m_max": [28.1], "temperature_2m_min": [18.0],
-                "precipitation_probability_max": [30]
-            }
-        });
-        let data = weather_data("São Paulo", &forecast);
-        assert_eq!(data["temp"], json!(24.3));
-        assert_eq!(data["code"], json!(2));
-        assert_eq!(data["isDay"], json!(true));
-        assert_eq!(data["max"], json!(28.1));
-        assert_eq!(data["rain"], json!(30));
-    }
-
-    fn pr(number: i64, sha: &str, state: &str) -> Value {
-        json!({
-            "number": number, "title": format!("PR {number}"), "url": "https://github.com/me/app/pull/1",
-            "isDraft": false, "reviewDecision": "REVIEW_REQUIRED", "updatedAt": "2026-10-03T10:00:00Z",
-            "repository": { "name": "app", "nameWithOwner": "me/app" },
-            "commits": { "nodes": [{ "commit": { "oid": sha, "statusCheckRollup": { "state": state } } }] }
-        })
-    }
-
-    fn pulse(prs: Vec<Value>, main: &str, main_sha: &str, reviews: Vec<i64>) -> Value {
-        github_pulse(&json!({
-            "viewer": {
-                "pullRequests": { "nodes": prs },
-                "repositories": { "nodes": [
-                    { "name": "app", "nameWithOwner": "me/app", "url": "https://github.com/me/app", "isArchived": false,
-                      "defaultBranchRef": { "name": "main", "target": { "oid": main_sha, "statusCheckRollup": { "state": main } } } },
-                    { "name": "old", "nameWithOwner": "me/old", "url": "https://github.com/me/old", "isArchived": true,
-                      "defaultBranchRef": { "name": "main", "target": { "oid": "x", "statusCheckRollup": { "state": "FAILURE" } } } },
-                    { "name": "empty", "nameWithOwner": "me/empty", "url": "https://github.com/me/empty", "isArchived": false,
-                      "defaultBranchRef": null }
-                ] }
-            },
-            "reviewRequested": { "nodes": reviews.iter().map(|n| json!({
-                "number": n, "title": "Look", "url": "https://github.com/team/api/pull/9", "isDraft": false,
-                "createdAt": "2026-10-03T09:00:00Z", "repository": { "name": "api", "nameWithOwner": "team/api" }
-            })).collect::<Vec<_>>() }
-        }))
-    }
-
-    #[test]
-    fn github_pulse_reads_prs_ci_and_reviews() {
-        let p = pulse(vec![pr(7, "a", "PENDING"), pr(8, "b", "ERROR")], "SUCCESS", "m", vec![9]);
-        assert_eq!(p["mine"][0]["id"], "me/app#7");
-        assert_eq!(p["mine"][0]["ci"], "pending");
-        assert_eq!(p["mine"][0]["review"], "pending");
-        assert_eq!(p["mine"][1]["ci"], "failure");
-        assert_eq!(p["mainCi"].as_array().unwrap().len(), 1, "archived and empty repos are skipped");
-        assert_eq!(p["mainCi"][0]["ci"], "success");
-        assert_eq!(p["reviews"][0]["id"], "team/api#9");
-        assert_eq!(github_pulse(&json!({}))["mine"], json!([]));
-        assert_eq!(ci_state(&Value::Null), "unknown");
-    }
-
-    #[test]
-    fn github_pulse_events_fire_on_transitions_only() {
-        let base = pulse(vec![pr(7, "a", "PENDING")], "SUCCESS", "m", vec![]);
-        assert!(github_pulse_event(None, &base).is_none(), "the first pulse only fills the card");
-        assert!(github_pulse_event(Some(&base), &base).is_none());
-
-        let green = pulse(vec![pr(7, "a", "SUCCESS")], "SUCCESS", "m", vec![]);
-        let e = github_pulse_event(Some(&base), &green).unwrap();
-        assert!(e.success && !e.alert);
-        assert_eq!(e.label, "CI passed · app#7");
-        assert!(github_pulse_event(Some(&green), &green).is_none());
-
-        let red = pulse(vec![pr(7, "a", "FAILURE")], "SUCCESS", "m", vec![]);
-        let e = github_pulse_event(Some(&base), &red).unwrap();
-        assert!(!e.success && e.alert);
-        assert_eq!(e.label, "CI failed · app#7");
-
-        let new_commit = pulse(vec![pr(7, "b", "PENDING")], "SUCCESS", "m", vec![]);
-        assert!(github_pulse_event(Some(&red), &new_commit).is_none(), "a new commit waits for its CI");
-
-        let main_red = pulse(vec![pr(7, "a", "PENDING")], "FAILURE", "m2", vec![]);
-        assert_eq!(github_pulse_event(Some(&base), &main_red).unwrap().detail.unwrap(), "main branch");
-        assert!(github_pulse_event(Some(&main_red), &main_red).is_none());
-
-        let review = pulse(vec![pr(7, "a", "SUCCESS")], "SUCCESS", "m", vec![9]);
-        let e = github_pulse_event(Some(&base), &review).unwrap();
-        assert_eq!(e.label, "Review requested · api", "a review outranks a green CI");
-    }
-
-    #[test]
-    fn github_activity_keeps_the_last_weeks() {
-        let weeks: Vec<Value> = (0..30)
-            .map(|w| json!({ "contributionDays": (0..7).map(|d| json!({
-                "date": format!("w{w}d{d}"), "contributionCount": d, "weekday": d,
-                "contributionLevel": if d == 0 { "NONE" } else { "THIRD_QUARTILE" }
-            })).collect::<Vec<_>>() }))
-            .collect();
-        let data = json!({ "viewer": { "contributionsCollection": { "contributionCalendar": {
-            "totalContributions": 1234, "weeks": weeks
-        } } } });
-        let a = github_activity(&data).unwrap();
-        assert_eq!(a["total"], 1234);
-        let days = a["days"].as_array().unwrap();
-        assert_eq!(days.len(), GITHUB_ACTIVITY_WEEKS * 7);
-        assert_eq!(days[0]["date"], "w7d0");
-        assert_eq!(days[1]["level"], 3);
-        assert_eq!(days[0]["level"], 0);
-        assert!(github_activity(&json!({})).is_none());
+    fn github_card_data_sends_only_what_is_known() {
+        let mut cache = GitHubCache::default();
+        assert_eq!(github_card_data(&cache), json!({}));
+        cache.stats = Some((12, 3400));
+        assert_eq!(github_card_data(&cache), json!({ "totalRepos": 12, "totalStars": 3400 }));
+        cache.activity = Some(GitHubActivity { total: 5, weeks: vec![], fetched_at: 9 });
+        let data = github_card_data(&cache);
+        assert_eq!(data["totalRepos"], json!(12));
+        assert_eq!(data["activity"], json!({ "total": 5, "weeks": [], "fetchedAt": 9 }));
+        assert!(data.get("pulse").is_none());
     }
 }

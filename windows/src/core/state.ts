@@ -2,31 +2,20 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
-import type { Worn } from "../mochi/outfits";
-import type { ClaudePlan, CursorPlan, KiroPlan } from "./bridge";
+import {
+  DEFAULT_MAIN_PILL, HOST_OS, availablePills, orderPills, pillDefinition, sanitizeDeclared,
+  toggleDeclared, type HostOs, type PillDefinition,
+} from "./pills";
+import type { CodexPlanUsage, PlanUsage } from "./plan";
+import type { ProviderId } from "./providers";
+import type { FileDiff } from "./diff";
+import type { Bindings } from "./shortcuts";
+import { DEFAULT_OUTFIT, type Outfit } from "../mochi/wardrobe";
+import { pillColor } from "./pill-colors";
+import { Spotify, musicPlaying } from "./spotify";
 
-export type AgentSource = "home" | "n8n" | "agent" | "todos";
-
-/** The Tasks pill: shown while there are open to-dos, opens the Tasks tab. */
-export const TODO_PILL_ID = "todos";
-/** The home card: weather, next task, habits, agents. Always first. */
-export const HOME_ID = "home";
-/** Claude Code's session pill; comes and goes with the session, like Cursor's. */
-export const CLAUDE_ID = "integration_claude";
-
-const HOME_TASK: AgentTask = {
-  id: HOME_ID, name: "Today", color: "#FBBF24", state: "idle", stepIndex: 0, steps: [],
-  source: "home", isIntegration: false,
-};
-
-/** Agent session pills: Claude Code and the hook-driven agent_* ones. */
-export function isAgentPill(id: string): boolean {
-  return id === CLAUDE_ID || id.startsWith("agent_");
-}
+export type AgentSource = "claudeCode" | "n8n" | "agent";
 export type PillBadge = "approval" | "finished" | "error";
-
-/** The open panel of the Today tab. */
-export type TodayTab = "tasks" | "habits" | "notes";
 
 export interface AgentTask {
   id: string;
@@ -35,47 +24,37 @@ export interface AgentTask {
   state: BotStateName;
   stepIndex: number;
   steps: string[];
+  /**
+   * Position of the newest step in the whole session. `steps` is capped, so
+   * `stepIndex` stops moving once it is full; this keeps counting.
+   */
+  stepSeq?: number;
   source: AgentSource;
   isIntegration: boolean;
   emote?: BotEmoteName | null;
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
-  /** Process of the app the session runs in, for "Open terminal". */
-  sessionHost?: number | null;
-  /** Recent file edits, referenced by the ticker's edit steps. */
-  edits?: EditInfo[];
-  /** The current step is the agent's final message: shown still, no shimmer. */
-  finalShown?: boolean;
-  /** Cursor sends its answer before `stop`; kept here until then. */
-  lastReply?: string;
-}
-
-/** One file edit as coucou-hook summarised it. */
-export interface EditInfo {
-  id: string;
-  path: string;
-  added: number;
-  removed: number;
-  /** Changed lines, prefixed "+", "-" or " "; "…" between hunks. */
-  lines: string[];
+  /** Claude Code's session, so "Open terminal" can find the window it runs in. */
+  sessionId?: string | null;
+  /** Claude's final message after Stop, one line; cleared when a new turn starts. */
+  finalLine?: string | null;
 }
 
 export interface ApprovalInfo {
-  /** The pill the request belongs to. */
-  taskId: string;
   requestId: string;
   sessionId: string;
+  /** The pill the request belongs to: VS Code's or Cursor's (Claude Code), or an agent's (Codex…). */
+  pillId: string;
   tool: string;
   command: string;
-  /** Set when this is a Claude Code question rather than a permission. */
-  questions?: AskQuestion[];
+  /** Set when Claude Code is asking a question rather than for a permission. */
+  questions?: AskedQuestion[];
 }
 
-/** One question of Claude Code's AskUserQuestion tool. */
-export interface AskQuestion {
+/** One question of an AskUserQuestion call. */
+export interface AskedQuestion {
   question: string;
-  header: string;
   options: { label: string; description: string }[];
   multiSelect: boolean;
 }
@@ -102,27 +81,13 @@ export interface SearchResult {
   note?: string;
 }
 
-const task = (
-  id: string, name: string, color: string, source: AgentSource,
-): AgentTask => ({
-  id, name, color, state: "idle", stepIndex: 0, steps: [], source, isIntegration: true,
-});
-
-/** AgentTask.integrationAgents — same ids, names and colours as macOS. */
-export const INTEGRATION_AGENTS: AgentTask[] = [
-  task("integration_resend", "Resend", "#22C55E", "n8n"),
-  task("integration_n8n", "n8n", "#F29B38", "n8n"),
-  task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
-  task("integration_github", "GitHub", "#F4505E", "n8n"),
-  task("integration_notion", "Notion", "#8C8C8C", "n8n"),
-  task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
-  task("integration_stripe", "Stripe", "#0570DE", "n8n"),
-];
-
-export const TOGGLEABLE_INTEGRATION_IDS = [
-  "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
-];
+/** A fresh, idle task for a catalog pill, in the colour the user gave it if any. */
+function taskFor(def: PillDefinition, colors: unknown, name = def.name): AgentTask {
+  return {
+    id: def.id, name, color: pillColor(def.id, def.color, colors), state: "idle", stepIndex: 0, steps: [],
+    source: def.source, isIntegration: true,
+  };
+}
 
 /** What an integration poller last reported. */
 export interface IntegrationInfo {
@@ -136,69 +101,107 @@ export interface Settings {
   soundEnabled: boolean;
   soundVolume: number;
   autoCloseInterval: number;
-  /** The compact island hides after a minute without the mouse. */
-  autoHide: boolean;
+  /** Hovering the island opens it all the way (off: hovering only peeks). */
+  openOnHover: boolean;
   absenceInterval: number;
+  /** Declared pills next to the main one (at most 4), in the order they were added. */
   activeIntegrations: string[];
-  screen: "primary" | "cursor";
+  /** The always-on workspace pill: VS Code, Cursor, Codex or Antigravity. */
+  mainPill: string;
+  /** "primary", "cursor", or `at:<x>,<y>` for one display (logical origin). */
+  screen: string;
   autostart: boolean;
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
-  /** Who may answer in the chat; Rust tries Cursor, then Kiro, then the API, until one answers. */
-  chatProviders: ("anthropic" | "cursor" | "kiro")[];
-  cursorModel: string;
-  kiroModel: string;
-  /** Cursor and Kiro shell commands wait for Allow/Deny on the island. */
-  agentApprovals: boolean;
-  /** Where the island was dragged to; null = top centre. Written by Rust only. */
-  islandOffset: [number, number] | null;
-  /** City for the home card's weather; empty = no weather. */
-  weatherCity: string;
-  /** Mochi's outfit (see mochi/outfits.ts); "auto" follows the seasons. */
+  /** Show the Claude plan pill (5 h and weekly limits) in the island's header. */
+  showPlanInNotch: boolean;
+  /** Coucou's status line relay is installed in Claude Code's settings. */
+  planRelayInstalled: boolean;
+  /** Show the Codex plan pill in the island's header. */
+  showCodexPlanInNotch: boolean;
+  /** Who the chat talks to (see core/providers.ts); picked in the chat view. */
+  chatProvider: ProviderId;
+  /** The model picked for each provider other than Anthropic, by provider id. */
+  chatModels: Record<string, string>;
+  /** Model server addresses once connected; empty means not connected. */
+  ollamaUrl: string;
+  lmstudioUrl: string;
+  customUrl: string;
+  /** Global shortcuts the user changed, by action id (see core/shortcuts.ts). */
+  shortcuts: Bindings;
+  /**
+   * Mochi's outfit: "auto" (dresses for the season), "none" or an outfit id.
+   * Same raw values as the Mac's "mochiOutfit"; read it through parseOutfit.
+   */
   mochiOutfit: string;
-  /** Mochi lives on the desktop. Written by Rust only. */
-  mochiOnDesktop: boolean;
-  /** His spot on the desktop, physical screen pixels. Written by Rust only. */
-  desktopMochi: [number, number] | null;
-  /** Global shortcuts: this modifier plus each action's key. */
-  shortcutModifier: string;
-  /** Key per shortcut action ("" = off). Missing: its default key. */
-  shortcuts: Record<string, string>;
+  /**
+   * A colour of the user's own for a pill's Mochi, by pill ID ("#RRGGBB").
+   * Empty means the catalog's colours; read it through core/pill-colors.ts.
+   * Same key and values as the Mac's "pillColors".
+   */
+  pillColors: Record<string, string>;
+  /**
+   * Interface language: "" follows the system (when Coucou has its language,
+   * else English), or one of src/i18n's ten codes ("fr", "pt-BR", "zh-Hans"…).
+   */
+  language: string;
+  /**
+   * The phone link for Coucou for Android is on. Rust owns it (only the switch in
+   * Settings → Android phone turns it on): whatever the page sends back is ignored.
+   */
+  phoneLink?: boolean;
+  /** The phone may chat through this computer's API keys. Rust owns it too. */
+  phoneChat?: boolean;
+  /** The phone may see session details (steps, last line, folder name, colour). Rust owns it too. */
+  phoneDetails?: boolean;
+  /** Which models the phone may use, "provider/model". Rust owns it too. */
+  phoneChatModels?: string[];
+  /** Mochi on the desktop. Rust owns it: whatever the page sends back is ignored. */
+  desktopMochi?: {
+    onDesktop: boolean;
+    spot: { x: number; y: number; space: string } | null;
+  };
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   soundEnabled: true,
   soundVolume: 0.12,
   autoCloseInterval: 15,
-  autoHide: true,
+  openOnHover: false,
   absenceInterval: 180,
   activeIntegrations: [
     "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
   ],
+  mainPill: DEFAULT_MAIN_PILL,
   screen: "primary",
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
-  chatProviders: ["anthropic"],
-  cursorModel: "auto",
-  kiroModel: "auto",
-  agentApprovals: false,
-  islandOffset: null,
-  weatherCity: "",
-  mochiOutfit: "auto",
-  mochiOnDesktop: false,
-  desktopMochi: null,
-  shortcutModifier: "Ctrl+Shift+Alt",
+  showPlanInNotch: false,
+  planRelayInstalled: false,
+  showCodexPlanInNotch: false,
+  chatProvider: "anthropic",
+  chatModels: {},
+  ollamaUrl: "",
+  lmstudioUrl: "",
+  customUrl: "",
   shortcuts: {},
+  mochiOutfit: DEFAULT_OUTFIT,
+  pillColors: {},
+  language: "",
 };
 
 type Listener = () => void;
 
+/** Live diffs kept per pill (oldest dropped first) — same cap as macOS. */
+export const MAX_DIFFS_PER_PILL = 50;
+/** A pill's diffs are forgotten after an hour without a new one, as on macOS. */
+export const DIFF_TTL_MS = 3_600_000;
+
 class AppState {
   mode: IslandMode = "hidden";
   view: IslandViewName = "overview";
-  todayTab: TodayTab = "tasks";
 
   tasks: AgentTask[] = [];
   focusId: string | null = null;
@@ -212,8 +215,6 @@ class AppState {
 
   isPinned = false;
   paused = false;
-  /** The edit whose diff the overview shows in place of the ticker. */
-  openDiff: string | null = null;
 
   uploadProgress = 0;
   uploadDuration = 2.4;
@@ -225,28 +226,43 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
-  /** The outfit hovered in the wardrobe, worn as a preview until the pointer leaves. */
-  wardrobePreview: Worn | null = null;
-
-  /**
-   * Mochi on the desktop: whether this desktop allows it, whether his window
-   * is on screen, and whether he is being dragged out of the island.
-   */
-  desktop = { available: false, visible: false, dragging: false };
+  /** The pill that was in front when the card came up; it comes back after. */
+  focusBeforeApproval: string | null = null;
 
   integrations: Record<string, IntegrationInfo> = {};
 
-  /** AI usage for the home card; null until first read. */
-  usage: {
-    claudeTokens: number;
-    claudePlan: ClaudePlan | null;
-    cursor: CursorPlan | null;
-    kiro: KiroPlan | null;
-  } | null = null;
+  /** Claude's 5 h / weekly limits, from the status line (null until the first call). */
+  planUsage: PlanUsage | null = null;
+  /** Codex's limits, from `codex app-server` (null until it has answered). */
+  codexPlanUsage: CodexPlanUsage | null = null;
+  /** A plan card is open in place of the overview's left card. */
+  showingPlanDetail = false;
+  /** Which one: the Codex card rather than Claude's. */
+  planDetailIsCodex = false;
+  /** Per-pill file diffs, in order of reception. Steps carry their ids. */
+  sessionDiffs = new Map<string, FileDiff[]>();
+  private sessionDiffTimers = new Map<string, number>();
+  /** Never reset, so an id can never point at a newer diff than the one tapped. */
+  private nextDiffId = 0;
+  /** Ctrl+↑ / Ctrl+↓: the highlighted row of the card's list (AppState.cardSelection). */
+  cardSelection: number | null = null;
+  /** Rows in the list on screen, 0 when there is none (AppState.cardItemCount). */
+  cardItemCount = 0;
+  /**
+   * Mochi is out of the island — on the desktop, flying, or being dragged
+   * there — so the island's own Mochi is hidden (AppState.mochiOnDesktop).
+   */
+  mochiOnDesktop = false;
+
+  /** Outfit shown on Mochi while the pointer rests on a wardrobe button. */
+  wardrobePreview: Outfit | null = null;
 
   lastActivity = performance.now();
 
   settings: Settings = { ...DEFAULT_SETTINGS };
+
+  /** Which pills this build offers depends on it (Claude Desktop is Windows only). */
+  os: HostOs = HOST_OS;
 
   private listeners = new Set<Listener>();
 
@@ -268,6 +284,11 @@ class AppState {
     return this.stateOverride ?? this.focusTask?.state ?? "idle";
   }
 
+  /** Spotify plays on a declared pill: Mochi dances (Linux; never on Windows yet). */
+  get spotifyPlaying(): boolean {
+    return musicPlaying(Spotify.state, sanitizeDeclared(this.settings, this.os).activeIntegrations);
+  }
+
   get otherTasks(): AgentTask[] {
     return this.tasks.filter((t) => t.id !== this.focusId);
   }
@@ -276,7 +297,38 @@ class AppState {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     this.focusId = id;
+    this.showingPlanDetail = false;
     t.pillBadge = null;
+    this.notify();
+  }
+
+  /**
+   * A permission card or a question comes up: its pill comes to the front, and
+   * the pill that was there is remembered (HookServer.focusBeforeApproval).
+   */
+  beginApproval(info: ApprovalInfo) {
+    this.pendingApproval = info;
+    this.isPinned = true;
+    if (this.focusBeforeApproval == null) this.focusBeforeApproval = this.focusId;
+    this.setFocus(info.pillId);
+  }
+
+  /**
+   * The card has its answer, or is withdrawn: the session carries on, and the
+   * pill you were on comes back — unless you moved to another one meanwhile.
+   */
+  endApproval() {
+    const req = this.pendingApproval;
+    if (!req) return;
+    this.pendingApproval = null;
+    this.isPinned = false;
+    this.updateTask(req.pillId, "working");
+    this.setPillBadge(req.pillId, null);
+    const previous = this.focusBeforeApproval;
+    this.focusBeforeApproval = null;
+    if (previous && this.focusId === req.pillId && this.tasks.some((t) => t.id === previous)) {
+      this.focusId = previous;
+    }
     this.notify();
   }
 
@@ -290,9 +342,11 @@ class AppState {
   appendStep(id: string, step: string) {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
+    const newest = t.stepSeq ?? t.steps.length - 1;
     t.steps.push(step);
     if (t.steps.length > 20) t.steps.shift();
     t.stepIndex = t.steps.length - 1;
+    t.stepSeq = newest + 1;
     this.notify();
   }
 
@@ -303,85 +357,156 @@ class AppState {
     this.notify();
   }
 
-  /** loadIntegrationTasks() — the home card always on, integrations opt-in (max 4). */
-  loadIntegrationTasks() {
-    if (!this.tasks.some((t) => t.id === HOME_ID)) this.tasks.push({ ...HOME_TASK, steps: [] });
-    for (const proto of INTEGRATION_AGENTS) {
-      const shouldLoad = this.settings.activeIntegrations.includes(proto.id);
-      const idx = this.tasks.findIndex((t) => t.id === proto.id);
-      if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
-      if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
-    }
-    // Order: home first, then agent pills (visible in slice(0,4)), the Tasks
-    // pill, then integrations in declaration order.
-    const order = INTEGRATION_AGENTS.map((t) => t.id);
-    const rank = (id: string) =>
-      id === HOME_ID ? 0 : isAgentPill(id) ? 1 : id === TODO_PILL_ID ? 2 : 3;
-    this.tasks.sort((a, b) =>
-      rank(a.id) - rank(b.id) || (rank(a.id) === 3 ? order.indexOf(a.id) - order.indexOf(b.id) : 0),
+  /** Stores a diff for a pill and returns its id (for the ticker step). */
+  appendSessionDiff(pillId: string, diff: FileDiff): number {
+    const id = this.nextDiffId++;
+    const list = this.sessionDiffs.get(pillId) ?? [];
+    list.push({ ...diff, id });
+    while (list.length > MAX_DIFFS_PER_PILL) list.shift();
+    this.sessionDiffs.set(pillId, list);
+    // One timer per pill, re-armed on every diff — nothing polls.
+    const prev = this.sessionDiffTimers.get(pillId);
+    if (prev != null) window.clearTimeout(prev);
+    this.sessionDiffTimers.set(
+      pillId,
+      window.setTimeout(() => this.clearSessionDiffs(pillId), DIFF_TTL_MS),
     );
-    if (!this.focusId) this.focusId = HOME_ID;
+    return id;
+  }
+
+  findDiff(pillId: string, id: number): FileDiff | null {
+    return this.sessionDiffs.get(pillId)?.find((d) => d.id === id) ?? null;
+  }
+
+  clearSessionDiffs(pillId: string) {
+    const timer = this.sessionDiffTimers.get(pillId);
+    if (timer != null) window.clearTimeout(timer);
+    this.sessionDiffTimers.delete(pillId);
+    this.sessionDiffs.delete(pillId);
+  }
+
+  /** The always-on workspace pill, once the setting has been checked. */
+  get mainPillId(): string {
+    return sanitizeDeclared(this.settings, this.os).mainPill;
+  }
+
+  /**
+   * True for a pill that stays when its session ends: the main pill and the
+   * declared ones go back to idle instead of going away.
+   */
+  isKept(id: string): boolean {
+    const d = sanitizeDeclared(this.settings, this.os);
+    return id === d.mainPill || d.activeIntegrations.includes(id);
+  }
+
+  /**
+   * Loads the catalog pills: the main pill always, the declared ones, and none
+   * of the others — a pill that is mid-session stays until its session ends.
+   * Safe to call any number of times. AppState.loadIntegrationTasks on macOS.
+   */
+  loadIntegrationTasks() {
+    const d = sanitizeDeclared(this.settings, this.os);
+    this.settings.mainPill = d.mainPill;
+    this.settings.activeIntegrations = d.activeIntegrations;
+    for (const def of availablePills(this.os)) {
+      const shouldLoad = def.id === d.mainPill || d.activeIntegrations.includes(def.id);
+      const idx = this.tasks.findIndex((t) => t.id === def.id);
+      if (shouldLoad && idx < 0) this.tasks.push(taskFor(def, this.settings.pillColors));
+      const busy = idx >= 0 && (this.tasks[idx].state !== "idle" || this.tasks[idx].steps.length > 0);
+      if (!shouldLoad && idx >= 0 && !busy) this.tasks.splice(idx, 1);
+    }
+    // A colour picked in Settings reaches the pills that are already up.
+    for (const t of this.tasks) {
+      const def = pillDefinition(t.id);
+      if (def) t.color = pillColor(def.id, def.color, this.settings.pillColors);
+    }
+    this.tasks = orderPills(this.tasks, d.mainPill);
+    if (!this.focusId || !this.tasks.some((t) => t.id === this.focusId)) this.focusId = d.mainPill;
     this.notify();
   }
 
+  /**
+   * A session is over. The main and declared pills are put back as they were;
+   * any other pill goes away (AppState.removeTask on macOS).
+   */
   removeTask(id: string) {
     const idx = this.tasks.findIndex((t) => t.id === id);
     if (idx < 0) return;
+    if (this.isKept(id)) {
+      const t = this.tasks[idx];
+      t.state = "idle";
+      t.steps = [];
+      t.stepIndex = 0;
+      delete t.stepSeq;
+      t.pillBadge = null;
+      t.finalLine = null;
+      const def = pillDefinition(id);
+      if (def) t.name = def.name;
+      this.clearSessionDiffs(id);
+      this.notify();
+      return;
+    }
     this.tasks.splice(idx, 1);
-    if (this.focusId === id) this.focusId = HOME_ID;
+    this.clearSessionDiffs(id);
+    if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? this.mainPillId;
     this.notify();
   }
 
-  /** Shows the Tasks pill while `open` to-dos are left, labelled with the count. */
-  setTodoPill(open: number) {
-    const t = this.tasks.find((x) => x.id === TODO_PILL_ID);
-    if (open === 0) {
-      if (t) this.removeTask(TODO_PILL_ID);
-      return;
-    }
-    const name = open === 1 ? "1 task" : `${open} tasks`;
-    if (t) {
-      t.name = name;
-      return;
-    }
-    // After home and the agent pills, before the integrations.
-    let at = this.tasks.findIndex((x) => x.id === HOME_ID) + 1;
-    while (at < this.tasks.length && isAgentPill(this.tasks[at].id)) at++;
-    this.tasks.splice(at, 0, {
-      id: TODO_PILL_ID, name, color: "#60A5FA",
-      state: "idle", stepIndex: 0, steps: [],
-      source: "todos", isIntegration: false,
-    });
-  }
-
-  /** Creates an agent session pill on first event; no-ops if it already exists.
-   *  Inserted right after home so it appears in the visible slice(0,4). */
+  /**
+   * Creates the pill of a tagged agent on its first event; no-op if it exists.
+   * Inserted right after the main pill so it is in the visible slice(0,4). A
+   * catalog agent wears its catalog colour, as on macOS.
+   */
   upsertExternalAgent(id: string, name: string, color: string) {
     if (this.tasks.some((t) => t.id === id)) return;
-    const at = this.tasks.findIndex((t) => t.id === HOME_ID) + 1;
-    this.tasks.splice(at, 0, {
-      id, name, color,
+    const def = pillDefinition(id);
+    this.insertAfterMain({
+      id, name, color: def ? pillColor(def.id, def.color, this.settings.pillColors) : color,
       state: "idle", stepIndex: 0, steps: [],
       source: "agent", isIntegration: false,
     });
-    if (!this.focusId) this.focusId = id;
+  }
+
+  /**
+   * The pill a Claude Code session belongs to (VS Code or Cursor). It is made
+   * for the session when it is neither the main pill nor declared, as
+   * upsertWorkspaceTask does on macOS.
+   */
+  upsertWorkspacePill(id: string, name: string, cwd: string): AgentTask | null {
+    let t = this.tasks.find((x) => x.id === id);
+    if (!t) {
+      const def = pillDefinition(id);
+      if (!def) return null;
+      t = taskFor(def, this.settings.pillColors, name);
+      this.insertAfterMain(t);
+    }
+    t.name = name;
+    if (cwd) t.sessionCwd = cwd;
+    return t;
+  }
+
+  private insertAfterMain(t: AgentTask) {
+    const at = this.tasks.findIndex((x) => x.id === this.mainPillId) + 1;
+    this.tasks.splice(at, 0, t);
+    if (!this.focusId) this.focusId = t.id;
     this.notify();
   }
 
+  /** Declares or undeclares a pill (max 4 next to the main one). */
   toggleIntegration(id: string) {
-    if (!TOGGLEABLE_INTEGRATION_IDS.includes(id)) return;
-    const active = this.settings.activeIntegrations;
-    if (active.includes(id)) {
-      this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = HOME_ID;
-    } else {
-      if (active.length >= 4) return;
-      this.settings.activeIntegrations = [...active, id];
-    }
+    const next = toggleDeclared(sanitizeDeclared(this.settings, this.os), id, this.os);
+    if (!next) return;
+    this.settings.activeIntegrations = next;
+    if (!next.includes(id) && this.focusId === id) this.focusId = this.mainPillId;
     this.loadIntegrationTasks();
   }
 
+  /**
+   * What the island opens on. A card waiting for an answer comes first, so
+   * reopening a folded island shows it again (Mac #117, #290).
+   */
   defaultView(): IslandViewName {
+    if (this.pendingApproval) return this.pendingApproval.questions ? "question" : "approval";
     return this.tasks.length === 0 ? "empty" : "overview";
   }
 }

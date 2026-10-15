@@ -1,157 +1,266 @@
-// Markdown for chat answers, built node by node: the model's text never goes
-// through innerHTML. Covers what chat answers actually use — paragraphs,
-// headings, lists, quotes, fenced code with a copy button, inline code, bold,
-// italic and links. Only http(s) links open, in the browser.
+// Markdown in the chat's answers, as on the Mac (ChatMarkdown.swift and
+// ChatMarkdownView.swift): headings, paragraphs, fenced code with a copy button,
+// bullet and numbered lists, quotes and rules, with bold, italic, `code` and
+// links inside the text.
+//
+// Everything is built as DOM nodes with textContent, never as HTML, so nothing
+// a model writes can inject markup. Links open only when they are http(s), and
+// even then through Rust, which checks the scheme again.
 
-import { h } from "./dom";
+import { Bridge } from "../core/bridge";
+import { h, svg } from "./dom";
+import { ICONS } from "./icons";
+import { N_, t } from "../i18n/i18n";
 
-type Block =
-  | { kind: "p"; text: string }
-  | { kind: "h"; level: number; text: string }
+const STRINGS = {
+  copy: N_("Copy"),
+  copied: N_("Copied"),
+};
+
+export type Block =
+  | { kind: "heading"; level: number; text: string }
+  | { kind: "paragraph"; text: string }
+  | { kind: "code"; lang: string; code: string }
+  /** `prefix` is "•" or "1."; `indent` the nesting level, from 0. */
+  | { kind: "item"; prefix: string; text: string; indent: number }
   | { kind: "quote"; text: string }
-  | { kind: "list"; ordered: boolean; items: string[] }
-  | { kind: "code"; lang: string; text: string };
+  | { kind: "rule" };
 
-const FENCE = /^\s*(```|~~~)\s*([\w+#.-]*)\s*$/;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
-const QUOTE = /^\s{0,3}>\s?(.*)$/;
-const BULLET = /^\s{0,3}[-*+]\s+(.*)$/;
-const NUMBERED = /^\s{0,3}\d{1,3}[.)]\s+(.*)$/;
+const isRule = (s: string) => s === "---" || s === "***" || s === "___";
+const isBullet = (s: string) => /^[-*+] /.test(s);
+const ordered = (s: string) => /^(\d+)\.\s+/.exec(s);
+const isQuote = (s: string) => s.startsWith("> ") || s === ">";
 
-/** Models that think out loud wrap it in <think>; the answer is what follows. */
-export function stripThinking(text: string): string {
-  return text.replace(/<think>[\s\S]*?(<\/think>|$)/g, "").trim();
-}
-
-export function parseBlocks(source: string): Block[] {
-  const lines = source.replace(/\r\n?/g, "\n").split("\n");
+/** Same rules as the Mac's parser, line by line. */
+export function parseMarkdown(input: string): Block[] {
   const blocks: Block[] = [];
-  let para: string[] = [];
-  const flush = () => {
-    if (para.length) blocks.push({ kind: "p", text: para.join("\n") });
-    para = [];
-  };
-
-  for (let i = 0; i < lines.length; i++) {
+  const lines = input.replace(/\r\n?/g, "\n").split("\n");
+  let i = 0;
+  while (i < lines.length) {
     const line = lines[i];
-    const fence = FENCE.exec(line);
-    if (fence) {
-      flush();
-      const body: string[] = [];
-      for (i++; i < lines.length && !lines[i].trim().startsWith(fence[1]); i++) body.push(lines[i]);
-      blocks.push({ kind: "code", lang: fence[2], text: body.join("\n") });
+
+    if (line.startsWith("```")) {
+      const lang = line.slice(3).trim();
+      const code: string[] = [];
+      for (i++; i < lines.length && !lines[i].startsWith("```"); i++) code.push(lines[i]);
+      blocks.push({ kind: "code", lang, code: code.join("\n") });
+      i++;
       continue;
     }
-    if (!line.trim()) {
-      flush();
+
+    // A heading needs a space after the #s; "#hashtag" stays a paragraph.
+    const hashes = /^#+/.exec(line)?.[0].length ?? 0;
+    if (hashes && (line.length === hashes || line[hashes] === " ")) {
+      const text = line.slice(hashes).trim();
+      if (text) blocks.push({ kind: "heading", level: Math.min(hashes, 6), text });
+      i++;
       continue;
     }
-    const heading = HEADING.exec(line);
-    if (heading) {
-      flush();
-      blocks.push({ kind: "h", level: heading[1].length, text: heading[2] });
+
+    const stripped = line.trim();
+    if (isRule(stripped)) {
+      blocks.push({ kind: "rule" });
+      i++;
       continue;
     }
-    if (QUOTE.test(line)) {
-      flush();
-      const body: string[] = [];
-      for (; i < lines.length && QUOTE.test(lines[i]); i++) body.push(QUOTE.exec(lines[i])![1]);
-      i--;
-      blocks.push({ kind: "quote", text: body.join("\n") });
+    if (isQuote(stripped)) {
+      blocks.push({ kind: "quote", text: stripped.startsWith("> ") ? stripped.slice(2) : "" });
+      i++;
       continue;
     }
-    const ordered = NUMBERED.test(line);
-    if (ordered || BULLET.test(line)) {
-      flush();
-      const re = ordered ? NUMBERED : BULLET;
-      const items: string[] = [];
-      for (; i < lines.length; i++) {
-        const m = re.exec(lines[i]);
-        if (m) items.push(m[1]);
-        // An indented line continues the item above it.
-        else if (items.length && /^\s{2,}\S/.test(lines[i])) items[items.length - 1] += " " + lines[i].trim();
-        else break;
-      }
-      i--;
-      blocks.push({ kind: "list", ordered, items });
+
+    const indent = Math.floor((line.length - line.trimStart().length) / 2);
+    if (isBullet(stripped)) {
+      blocks.push({ kind: "item", prefix: "•", text: stripped.slice(2), indent });
+      i++;
       continue;
     }
-    para.push(line);
+    const number = ordered(stripped);
+    if (number) {
+      blocks.push({ kind: "item", prefix: `${number[1]}.`, text: stripped.slice(number[0].length), indent });
+      i++;
+      continue;
+    }
+    if (!stripped) {
+      i++;
+      continue;
+    }
+
+    // A paragraph runs until a blank line or the start of another block.
+    const para = [line];
+    for (i++; i < lines.length; i++) {
+      const next = lines[i];
+      const s = next.trim();
+      if (!s || next.startsWith("#") || next.startsWith("```") || isQuote(s) || isBullet(s) || isRule(s) || ordered(s)) break;
+      para.push(next);
+    }
+    blocks.push({ kind: "paragraph", text: para.join("\n") });
   }
-  flush();
   return blocks;
 }
 
-const INLINE = /(`+)([\s\S]+?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|\[([^\]]+)\]\(([^)\s]+)\)/g;
+// ── Inline ────────────────────────────────────────────────────────────────────
 
-export function isWebLink(url: string): boolean {
-  return /^https?:\/\/[^\s]+$/i.test(url);
+export type Inline =
+  | { kind: "text"; text: string }
+  | { kind: "code"; text: string }
+  | { kind: "strong"; children: Inline[] }
+  | { kind: "em"; children: Inline[] }
+  /** `url` is null when the target is not a web address: the text stays, the link goes. */
+  | { kind: "link"; url: string | null; children: Inline[] };
+
+/**
+ * `code`, **bold**, __bold__, *italic*, _italic_ and [text](url), whichever
+ * comes first. No lookbehind: older WebKitGTK builds reject it, and one bad
+ * regex literal would take the whole island down with it.
+ */
+const INLINE = /`([^`\n]+)`|\*\*([^*]+?)\*\*|__([^_]+?)__|\*([^*\s][^*]*?)\*|_([^_\s][^_]*?)_(?!\w)|\[([^\]\n]+)\]\(([^)\s]+)\)/g;
+
+const isWordChar = (c: string | undefined) => c != null && /\w/.test(c);
+
+/** The address if it is an http(s) one; anything else (javascript:, file:, data:…) is not a link. */
+export function safeWebUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim());
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
-function inline(text: string, openUrl: (url: string) => void): Node[] {
-  const out: Node[] = [];
-  let last = 0;
-  for (const m of text.matchAll(INLINE)) {
-    const at = m.index ?? 0;
-    if (at > last) out.push(document.createTextNode(text.slice(last, at)));
-    last = at + m[0].length;
-    if (m[2] != null) out.push(h("code", { class: "md-code", text: m[2].trim() }));
-    else if (m[3] != null || m[4] != null) out.push(h("strong", {}, ...inline(m[3] ?? m[4], openUrl)));
-    else if (m[5] != null || m[6] != null) out.push(h("em", {}, ...inline(m[5] ?? m[6], openUrl)));
-    else if (m[7] != null) {
-      const url = m[8];
-      if (isWebLink(url)) {
-        const a = h("a", { class: "md-link", title: url }, ...inline(m[7], openUrl));
-        a.addEventListener("click", (e) => {
-          e.preventDefault();
-          openUrl(url);
-        });
-        out.push(a);
-      } else {
-        out.push(document.createTextNode(m[7]));
-      }
+export function parseInline(text: string): Inline[] {
+  const out: Inline[] = [];
+  const pushText = (t: string) => {
+    if (!t) return;
+    const last = out[out.length - 1];
+    if (last?.kind === "text") last.text += t;
+    else out.push({ kind: "text", text: t });
+  };
+  const re = new RegExp(INLINE.source, "g");
+  let at = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    // snake_case_words are not italics: an opening _ must not follow a letter.
+    if (m[5] != null && isWordChar(text[m.index - 1])) {
+      re.lastIndex = m.index + 1;
+      continue;
     }
+    pushText(text.slice(at, m.index));
+    at = m.index + m[0].length;
+    if (m[1] != null) out.push({ kind: "code", text: m[1] });
+    else if (m[6] != null) out.push({ kind: "link", url: safeWebUrl(m[7]), children: parseInline(m[6]) });
+    else if (m[2] != null || m[3] != null) out.push({ kind: "strong", children: parseInline(m[2] ?? m[3]) });
+    else out.push({ kind: "em", children: parseInline(m[4] ?? m[5]) });
   }
-  if (last < text.length) out.push(document.createTextNode(text.slice(last)));
+  pushText(text.slice(at));
   return out;
 }
 
-function copyButton(text: string): HTMLElement {
-  const b = h("button", { class: "md-copy", text: "Copy" });
-  b.addEventListener("click", () => {
-    void navigator.clipboard?.writeText(text).then(() => {
-      b.textContent = "Copied";
-      window.setTimeout(() => (b.textContent = "Copy"), 1200);
-    });
-  });
-  return b;
-}
-
-export function renderMarkdown(source: string, openUrl: (url: string) => void): HTMLElement {
-  const root = h("div", { class: "md" });
-  for (const b of parseBlocks(stripThinking(source))) {
-    switch (b.kind) {
-      case "p":
-        root.append(h("p", {}, ...inline(b.text, openUrl)));
+function appendInline(into: HTMLElement, nodes: Inline[]) {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "text":
+        into.append(document.createTextNode(node.text));
         break;
-      case "h":
-        root.append(h("div", { class: `md-h md-h${Math.min(b.level, 3)}` }, ...inline(b.text, openUrl)));
+      case "code":
+        into.append(h("code", { class: "md-code", text: node.text }));
         break;
-      case "quote":
-        root.append(h("blockquote", {}, ...inline(b.text, openUrl)));
-        break;
-      case "list": {
-        const list = h(b.ordered ? "ol" : "ul", {});
-        for (const item of b.items) list.append(h("li", {}, ...inline(item, openUrl)));
-        root.append(list);
+      case "strong":
+      case "em": {
+        const el = h(node.kind === "strong" ? "strong" : "em");
+        appendInline(el, node.children);
+        into.append(el);
         break;
       }
-      case "code":
-        root.append(h("div", { class: "md-pre" },
-          h("div", { class: "md-pre-head" }, h("span", { text: b.lang }), copyButton(b.text)),
-          h("pre", { text: b.text })));
+      case "link": {
+        if (!node.url) {
+          appendInline(into, node.children);
+          break;
+        }
+        const url = node.url;
+        const a = h("a", { class: "md-link", href: url, title: url });
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          void Bridge.openUrl(url);
+        });
+        appendInline(a, node.children);
+        into.append(a);
         break;
+      }
     }
   }
-  return root;
+}
+
+function inline(text: string, into: HTMLElement) {
+  appendInline(into, parseInline(text));
+}
+
+// ── Blocks ────────────────────────────────────────────────────────────────────
+
+async function writeClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // No clipboard API (or no permission): the old way, through a hidden field.
+    const area = h("textarea", { style: "position:fixed;opacity:0" }) as HTMLTextAreaElement;
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+}
+
+/** Puts the code on the clipboard; the check mark shows for a moment. */
+function copyButton(text: string): HTMLElement {
+  const btn = h("button", { class: "md-copy", title: t(STRINGS.copy), "aria-label": t(STRINGS.copy) }, svg(ICONS.copy, 11));
+  btn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await writeClipboard(text);
+    btn.replaceChildren(svg(ICONS.check, 11, { stroke: 2.2 }));
+    btn.classList.add("done");
+    btn.title = t(STRINGS.copied);
+    window.setTimeout(() => {
+      btn.replaceChildren(svg(ICONS.copy, 11));
+      btn.classList.remove("done");
+      btn.title = t(STRINGS.copy);
+    }, 1500);
+  });
+  return btn;
+}
+
+function render(block: Block): HTMLElement {
+  switch (block.kind) {
+    case "heading": {
+      const el = h("div", { class: block.level <= 2 ? "md-h md-h1" : "md-h" });
+      inline(block.text, el);
+      return el;
+    }
+    case "paragraph": {
+      const el = h("div", { class: "md-p" });
+      inline(block.text, el);
+      return el;
+    }
+    case "code":
+      return h("div", { class: "md-pre" }, h("pre", { text: block.code }), copyButton(block.code));
+    case "item": {
+      const text = h("span", { class: "md-p" });
+      inline(block.text, text);
+      const item = h("div", { class: "md-item" }, h("span", { class: "md-bullet", text: block.prefix }), text);
+      if (block.indent) item.style.paddingLeft = `${block.indent * 12}px`;
+      return item;
+    }
+    case "quote": {
+      const text = h("span", { class: "md-p" });
+      inline(block.text, text);
+      return h("div", { class: "md-quote" }, h("i"), text);
+    }
+    case "rule":
+      return h("hr", { class: "md-rule" });
+  }
+}
+
+/** Replaces what `into` shows with the Markdown rendered. */
+export function renderMarkdown(into: HTMLElement, markdown: string) {
+  into.replaceChildren(...parseMarkdown(markdown).map(render));
 }

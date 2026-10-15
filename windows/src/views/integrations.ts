@@ -6,20 +6,23 @@
 
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
-import { HOME_ID, State, isAgentPill, type AgentTask } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
-import { Todos } from "../core/todoStore";
-import { dayOf, upNext, whenLabel } from "../core/todos";
+import { isComingSoon, pillDefinition } from "../core/pills";
+import { refreshHookPills } from "../island/integrations";
+import { readActivity, readPulse, readStats } from "../core/github";
+import { githubDetail, githubPulseCard } from "./github";
+import { N_, language, t } from "../i18n/i18n";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
   const date = typeof value === "number" ? new Date(value) : new Date(String(value));
   const diff = (Date.now() - date.getTime()) / 1000;
   if (!Number.isFinite(diff)) return "";
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86400)}d`;
+  if (diff < 60) return t("just now");
+  if (diff < 3600) return t("{n}m", { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t("{n}h", { n: Math.floor(diff / 3600) });
+  return t("{n}d", { n: Math.floor(diff / 86400) });
 }
 
 function header(color: string, name: string, kind: string, extra?: Node): HTMLElement {
@@ -55,20 +58,61 @@ const OPEN_URLS: Record<string, string> = {
   integration_calcom: "https://app.cal.com/bookings",
 };
 
+/** IntegrationCardView.statusLabel on macOS. */
+export function idleStatus(
+  id: string,
+  info: { configured: boolean; error: string | null } | undefined,
+  chatModel: string,
+): { label: string; color: string } {
+  if (isComingSoon(id)) return { label: t("Coming soon"), color: "#6B7079" };
+  if (info?.error) return { label: info.error, color: "#F4505E" };
+  const configured = info?.configured ?? false;
+  const def = pillDefinition(id);
+  const ok = (label: string) => ({ label, color: "#22C55E" });
+  const missing = (label: string) => ({ label, color: "#F4505E" });
+  // Pills driven by hooks never have a key: they are connected once the hooks
+  // are in place (Mac #183). A session replaces this card; nothing is loading.
+  if (def?.connect.kind === "hooks") return configured ? ok(t("Hooks installed")) : missing(t("Hooks not installed"));
+  if (def?.connect.kind === "none") return ok(t("Ready · no setup needed"));
+  if (def?.connect.kind === "server") return configured ? ok(t("Connected")) : missing(t("Not connected"));
+  if (def?.category === "ai") {
+    if (!configured) return missing(t("Key not configured"));
+    return ok(id === "ai_anthropic" ? t("Key configured · {model}", { model: chatModel }) : t("Key configured"));
+  }
+  return configured ? ok(t("Connected · loading…")) : missing(t("Key not configured"));
+}
+
 function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const info = State.integrations[task.id];
   const configured = info?.configured ?? false;
-  const error = info?.error ?? null;
-  const label = error ?? (configured ? "Connected · loading…" : "Key not configured");
-  const statusColor = error || !configured ? "#F4505E" : "#22C55E";
+  const def = pillDefinition(task.id);
+  const status = idleStatus(task.id, info, State.settings.model);
 
   const actions = h("div", { class: "int-actions" });
-  if (task.id === "integration_n8n") {
+  if (task.id === "integration_claude") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}b3`,
+        text: t("Open Visual Studio Code"),
+        onclick: () => void Bridge.openInVSCode(task.sessionCwd ?? null),
+      }),
+    );
+  } else if (task.id === "agent_claude-desktop") {
     actions.append(
       h("button", {
         class: "link-btn",
         style: `color:${task.color}d9`,
-        text: "Open n8n",
+        text: t("Open Claude"),
+        onclick: () => void Bridge.openClaudeDesktop(),
+      }),
+    );
+  } else if (task.id === "integration_n8n") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: t("Open {name}", { name: "n8n" }),
         onclick: () => void Bridge.openN8n(),
       }),
     );
@@ -77,31 +121,39 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
       h("button", {
         class: "link-btn",
         style: `color:${task.color}d9`,
-        text: `Open ${task.name}`,
+        text: t("Open {name}", { name: task.name }),
         onclick: () => void Bridge.openUrl(OPEN_URLS[task.id]),
       }),
     );
   }
-  if (configured) {
+  const hookPill = def?.connect.kind === "hooks";
+  if (isComingSoon(task.id) || def?.connect.kind === "none") {
+    // Nothing to set up, and nothing to refresh.
+  } else if (configured && (hookPill || def?.category !== "ai")) {
     actions.append(
       h("button", {
         class: "link-btn",
         style: `color:${task.color}d9`,
-        text: "Refresh",
-        onclick: () => void Bridge.refreshIntegration(task.id),
+        text: t("Refresh"),
+        // A hook pill has nothing to poll: look at its hooks again instead.
+        onclick: () => void (hookPill ? refreshHookPills() : Bridge.refreshIntegration(task.id)),
       }),
     );
-  } else {
+  } else if (!configured) {
     actions.append(
-      h("button", { class: "link-btn", style: "color:#8e939c", text: "Settings…", onclick: openSettings }),
+      h("button", { class: "link-btn", style: "color:#8e939c", text: t("Settings…"), onclick: openSettings }),
     );
   }
 
   return h(
     "div",
     { class: "int-card" },
-    header(task.color, task.name, "Integration"),
-    h("div", { class: "int-status" }, dot(statusColor, 5), h("span", { text: label })),
+    header(
+      task.color,
+      task.id === "integration_claude" ? def!.name : task.name,
+      t(def?.subtitle ?? N_("Integration")),
+    ),
+    h("div", { class: "int-status" }, dot(status.color, 5), h("span", { text: status.label })),
     actions,
   );
 }
@@ -118,7 +170,7 @@ function vercelCard(onDetail: () => void): HTMLElement {
     if (i === 0) {
       const more = h(
         "button",
-        { class: "int-more", title: "Details", onclick: onDetail },
+        { class: "int-more", title: t("Details"), onclick: onDetail },
         svg(ICONS.ellipsis, 8),
       );
       rows.append(listRow(accent, true, name, ago, more));
@@ -126,19 +178,19 @@ function vercelCard(onDetail: () => void): HTMLElement {
       rows.append(listRow(accent, false, name, ago));
     }
   });
-  return h("div", { class: "int-card" }, header("#7C5CFF", "Vercel", "Deployments"), rows);
+  return h("div", { class: "int-card" }, header("#7C5CFF", "Vercel", t("Deployments")), rows);
 }
 
 function vercelDetail(onBack: () => void): HTMLElement {
   const d = arr("integration_vercel", "deployments")[0] ?? {};
   const success = d.state === "READY";
   const accent = success ? "#22C55E" : "#F4505E";
-  const status = success ? "Ready" : d.state === "CANCELED" ? "Canceled" : "Error";
+  const status = success ? t("Ready") : d.state === "CANCELED" ? t("Canceled") : t("Error");
   const body = h("div", { class: "int-detail-body" });
   if (d.commitMessage) body.append(h("div", { class: "int-commit", text: String(d.commitMessage) }));
   const meta = h("div", { class: "int-meta" });
   if (d.branch) meta.append(h("span", { text: String(d.branch) }));
-  meta.append(h("span", { text: `${timeAgo(d.createdAt)} ago` }));
+  meta.append(h("span", { text: t("{time} ago", { time: timeAgo(d.createdAt) }) }));
   body.append(meta);
   if (d.url) {
     body.append(
@@ -157,7 +209,7 @@ function vercelDetail(onBack: () => void): HTMLElement {
       { class: "int-detail-head" },
       h("button", { class: "int-back", onclick: onBack }, svg(ICONS.chevronLeft, 10, { stroke: 2.4 })),
       dot(accent, 6),
-      h("b", { text: String(d.projectName ?? "Deployment") }),
+      h("b", { text: String(d.projectName ?? t("Deployment")) }),
       h("span", { class: "int-badge", style: `color:${accent};background:${accent}24`, text: status }),
     ),
     body,
@@ -186,7 +238,7 @@ function resendCard(): HTMLElement {
     if (i === 0 && e.subject) cells.push(h("span", { class: "int-sub", text: String(e.subject) }));
     rows.append(listRow(accent, i === 0, ...cells));
   });
-  return h("div", { class: "int-card" }, header("#22C55E", "Resend", "Emails", extra), rows);
+  return h("div", { class: "int-card" }, header("#22C55E", "Resend", t("Emails"), extra), rows);
 }
 
 // ── GitHub ────────────────────────────────────────────────────────────────────
@@ -201,138 +253,21 @@ function statRow(icon: string, color: string, label: string, value: string): HTM
   );
 }
 
-const CI_COLORS: Record<string, string> = { failure: "#F4505E", pending: "#F5A524", success: "#22C55E" };
-const CONTRIBUTION_COLORS = ["rgba(255,255,255,0.06)", "#0E4429", "#006D32", "#26A641", "#39D353"];
-
-interface ContributionDay {
-  date: string;
-  count: number;
-  level: number;
-  weekday: number;
-}
-
-function contributions(): { total: number; days: ContributionDay[] } | null {
-  const a = get("integration_github").activity as { total?: number; days?: ContributionDay[] } | null | undefined;
-  if (!a || !Array.isArray(a.days) || a.days.length === 0) return null;
-  return { total: Number(a.total ?? 0), days: a.days };
-}
-
-function contributionCell(day: ContributionDay | null): HTMLElement {
-  return h("i", { class: "gh-cell", style: `background:${day ? CONTRIBUTION_COLORS[day.level] ?? CONTRIBUTION_COLORS[0] : "transparent"}` });
-}
-
-function contributionLabel(day: ContributionDay): string {
-  const date = new Date(`${day.date}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  return `${date} · ${day.count} contribution${day.count === 1 ? "" : "s"}`;
-}
-
-function githubCard(onDetail: () => void): HTMLElement {
+function githubCard(): HTMLElement {
   const d = get("integration_github");
   const stars = Number(d.totalStars ?? 0);
   const repos = Number(d.totalRepos ?? 0);
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  const mine = arr("integration_github", "mine");
-  const mainCi = arr("integration_github", "mainCi");
-  const reviews = arr("integration_github", "reviews");
-  const activity = contributions();
-
-  // The last seven days, opening the full grid.
-  const week = activity
-    ? h(
-        "button",
-        { class: "gh-week", title: `${activity.total} contributions in the past year`, onclick: onDetail },
-        ...activity.days.slice(-7).map(contributionCell),
-      )
-    : undefined;
-
-  // Red CI first (your PRs, then default branches), then PRs waiting for your
-  // review, your other PRs coloured by their CI, then the org's open PRs.
-  type Item = [string, string, string, unknown];
-  const ciColor = (ci: unknown) => CI_COLORS[String(ci)] ?? "#6B7079";
-  const prText = (p: Record<string, unknown>) => `${p.repo}#${p.number} · ${p.title}`;
-  const known = new Set([...mine, ...reviews].map((p) => String(p.url)));
-  const items: Item[] = [
-    ...mine.filter((p) => p.ci === "failure").map((p): Item => [ciColor(p.ci), prText(p), String(p.url ?? ""), p.createdAt]),
-    ...mainCi.filter((r) => r.ci === "failure")
-      .map((r): Item => ["#F4505E", `${r.repo} · ${r.branch} failing`, `${r.url}/actions`, null]),
-    ...reviews.map((p): Item => ["#F5A524", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
-    ...mine.filter((p) => p.ci !== "failure").map((p): Item => [ciColor(p.ci), prText(p), String(p.url ?? ""), p.createdAt]),
-    ...arr("integration_github", "prs")
-      .filter((p) => !known.has(String(p.url)))
-      .map((p): Item => ["#22C55E", `${p.repo} · ${p.title}`, String(p.url ?? ""), p.createdAt]),
-  ];
-
-  const failing = mine.filter((p) => p.ci === "failure").length;
-  const running = mine.filter((p) => p.ci === "pending").length;
-  const kind = mine.length
-    ? [`${mine.length} PR${mine.length === 1 ? "" : "s"}`, failing ? `${failing} failing` : running ? `${running} running` : ""]
-        .filter(Boolean).join(" · ")
-    : Number(d.openPrs ?? 0) ? `${d.openPrs} open PRs` : "Pull requests & CI";
-
-  if (items.length > 0) {
-    const rows = h("div", { class: "int-rows" });
-    items.slice(0, 3).forEach(([accent, text, url, at], i) => {
-      const row = listRow(
-        accent,
-        i === 0,
-        h("span", { class: "int-name", text }),
-        h("span", { class: "int-ago", text: at ? timeAgo(at) : "" }),
-      );
-      if (url) {
-        row.style.cursor = "pointer";
-        row.addEventListener("click", () => void Bridge.openUrl(url));
-      }
-      rows.append(row);
-    });
-    return h("div", { class: "int-card" }, header("#F4505E", "GitHub", kind, week), rows);
-  }
-
-  const mainFailing = mainCi.filter((r) => r.ci === "failure").length;
-  const mainRunning = mainCi.filter((r) => r.ci === "pending").length;
-  const stats = h(
-    "div",
-    { class: "int-stats" },
-    statRow(ICONS.star, "#F5A524", "Total stars", fmt(stars)),
-    statRow(ICONS.stack, "#6B7079", "Repositories", String(repos)),
-  );
-  if (mainCi.length) {
-    stats.append(statRow(
-      ICONS.stack,
-      mainFailing ? "#F4505E" : mainRunning ? "#F5A524" : "#22C55E",
-      "Default branch CI",
-      mainFailing ? `${mainFailing} failing` : mainRunning ? `${mainRunning} running` : "all green",
-    ));
-  }
-  return h("div", { class: "int-card" }, header("#F4505E", "GitHub", "Overview", week), stats);
-}
-
-function githubActivityDetail(onBack: () => void): HTMLElement {
-  const activity = contributions();
-  const summary = activity ? `${activity.total.toLocaleString("en-US")} past year` : "";
-  const hover = h("span", { class: "gh-hover", text: summary });
-  const grid = h("div", { class: "gh-grid" });
-  if (activity) {
-    // Weeks run Sunday to Saturday; pad the first one so each row is a weekday.
-    for (let i = 0; i < (activity.days[0]?.weekday ?? 0); i++) grid.append(contributionCell(null));
-    for (const day of activity.days) {
-      const cell = contributionCell(day);
-      cell.addEventListener("mouseenter", () => (hover.textContent = contributionLabel(day)));
-      cell.addEventListener("mouseleave", () => (hover.textContent = summary));
-      grid.append(cell);
-    }
-  }
   return h(
     "div",
-    { class: "int-card detail" },
+    { class: "int-card" },
+    header("#F4505E", "GitHub", t("Overview")),
     h(
       "div",
-      { class: "int-detail-head" },
-      h("button", { class: "int-back", onclick: onBack }, svg(ICONS.chevronLeft, 10, { stroke: 2.4 })),
-      dot("#39D353", 6),
-      h("b", { text: "Activity" }),
-      hover,
+      { class: "int-stats" },
+      statRow(ICONS.star, "#F5A524", t("Total stars"), fmt(stars)),
+      statRow(ICONS.stack, "#6B7079", t("Repositories"), String(repos)),
     ),
-    grid,
   );
 }
 
@@ -351,7 +286,7 @@ function stripeCard(): HTMLElement {
         "div",
         { class: "int-row" },
         dot(accent, 5),
-        h("span", { class: "int-name", text: String(p.description ?? "Payment") }),
+        h("span", { class: "int-name", text: String(p.description ?? t("Payment")) }),
         h("span", {
           class: "int-amount",
           style: "color:#22c55e",
@@ -364,7 +299,7 @@ function stripeCard(): HTMLElement {
   return h(
     "div",
     { class: "int-card" },
-    header("#0570DE", "Stripe", "Payments"),
+    header("#0570DE", "Stripe", t("Payments")),
     h("div", { class: "int-balance" }, h("span", { text: balance }), h("i", { text: currency })),
     rows,
   );
@@ -387,12 +322,12 @@ function notionCard(): HTMLElement {
         p.emoji
           ? h("span", { class: "int-emoji", text: String(p.emoji) })
           : h("i", { class: "int-emoji" }, svg(ICONS.doc, 9)),
-        h("span", { class: "int-name", text: String(p.title ?? "Untitled") }),
+        h("span", { class: "int-name", text: String(p.title ?? t("Untitled")) }),
         h("span", { class: "int-ago", text: timeAgo(p.lastEditedAt) }),
       ),
     );
   }
-  return h("div", { class: "int-card" }, header("#E8E8E8", "Notion", "Recent"), rows);
+  return h("div", { class: "int-card" }, header("#E8E8E8", "Notion", t("Recent")), rows);
 }
 
 // ── Cal.com ───────────────────────────────────────────────────────────────────
@@ -403,23 +338,23 @@ function calcomCard(): HTMLElement {
     .sort((a, b) => new Date(String(a.start)).getTime() - new Date(String(b.start)).getTime());
   const rows = h("div", { class: "int-rows tight" });
   if (bookings.length === 0) {
-    rows.append(h("div", { class: "int-empty", text: "No calls scheduled" }));
+    rows.append(h("div", { class: "int-empty", text: t("No calls scheduled") }));
   }
   for (const b of bookings.slice(0, 3)) {
     const when = new Date(String(b.start));
-    const day = when.toLocaleDateString(undefined, { day: "2-digit", month: "2-digit" });
-    const time = when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    const day = when.toLocaleDateString(language(), { day: "2-digit", month: "2-digit" });
+    const time = when.toLocaleTimeString(language(), { hour: "2-digit", minute: "2-digit" });
     rows.append(
       h(
         "div",
         { class: "int-row" },
         dot("#C9956A", 4),
         h("span", { class: "int-time", text: `${day} ${time}` }),
-        h("span", { class: "int-name", text: String(b.title ?? "Meeting") }),
+        h("span", { class: "int-name", text: String(b.title ?? t("Meeting")) }),
       ),
     );
   }
-  return h("div", { class: "int-card" }, header("#C9956A", "Cal.com", "Schedule"), rows);
+  return h("div", { class: "int-card" }, header("#C9956A", "Cal.com", t("Schedule")), rows);
 }
 
 // ── n8n ───────────────────────────────────────────────────────────────────────
@@ -432,7 +367,7 @@ function n8nCard(task: AgentTask, onDetail: () => void, openSettings: () => void
   return h(
     "div",
     { class: "int-card" },
-    header("#F29B38", "n8n", "Workflow"),
+    header("#F29B38", "n8n", t("Workflow")),
     h(
       "div",
       { class: "int-actions" },
@@ -444,7 +379,7 @@ function n8nCard(task: AgentTask, onDetail: () => void, openSettings: () => void
           onclick: onDetail,
         },
         dot(accent, 5),
-        h("span", { class: "int-name", text: task.steps[0] ?? "Workflow" }),
+        h("span", { class: "int-name", text: task.steps[0] ?? t("Workflow") }),
         svg(ICONS.ellipsis, 8),
       ),
     ),
@@ -463,18 +398,18 @@ function n8nDetail(task: AgentTask, onBack: () => void): HTMLElement {
       { class: "int-detail-head" },
       h("button", { class: "int-back", onclick: onBack }, svg(ICONS.chevronLeft, 10, { stroke: 2.4 })),
       dot(accent, 6),
-      h("b", { text: task.steps[0] ?? "Workflow" }),
+      h("b", { text: task.steps[0] ?? t("Workflow") }),
       h("span", {
         class: "int-badge",
         style: `color:${accent};background:${accent}24`,
-        text: success ? "Success" : "Failed",
+        text: success ? t("Success") : t("Failed"),
       }),
     ),
     detail
       ? h("pre", { class: "int-detail-text", text: detail })
       : h("div", {
           class: "int-status",
-          text: success ? "Completed successfully." : "No error details available.",
+          text: success ? t("Completed successfully.") : t("No error details available."),
         }),
   );
 }
@@ -498,7 +433,7 @@ export function hasIntegrationData(id: string): boolean {
     case "integration_resend":
       return arr(id, "emails").length > 0;
     case "integration_github":
-      return get(id).totalRepos != null;
+      return get(id).totalRepos != null || readPulse(get(id)) != null;
     case "integration_stripe":
       return info.loaded;
     case "integration_notion":
@@ -510,152 +445,7 @@ export function hasIntegrationData(id: string): boolean {
   }
 }
 
-// ── Home ──────────────────────────────────────────────────────────────────────
-
-/** WMO weather code → icon and word (Open-Meteo `weather_code`). */
-function sky(code: number, isDay: boolean): [string, string] {
-  if (code <= 1) return [isDay ? ICONS.sun : ICONS.moon, "Clear"];
-  if (code <= 3) return [ICONS.cloud, "Cloudy"];
-  if (code === 45 || code === 48) return [ICONS.cloud, "Fog"];
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return [ICONS.snow, "Snow"];
-  if (code >= 95) return [ICONS.storm, "Storm"];
-  return [ICONS.rain, "Rain"];
-}
-
-const deg = (v: unknown) => (typeof v === "number" ? `${Math.round(v)}°` : "–");
-
-function homeSummary() {
-  const now = new Date();
-  const today = dayOf(now);
-  const next = upNext(Todos.doc, 1)[0] ?? null;
-  const habits = Todos.doc.habits ?? [];
-  const agents = State.tasks.filter((t) => isAgentPill(t.id));
-  return {
-    today,
-    next: next ? { title: next.title, when: next.due ? whenLabel(next, now) : "" } : null,
-    habitsDone: habits.filter((x) => x.days.includes(today)).length,
-    habits: habits.length,
-    agents: agents.length,
-    waiting: agents.filter((t) => t.state === "approval" || t.pillBadge === "approval").length,
-    weather: State.integrations.weather ?? null,
-    usage: State.usage,
-    plan: claudePlan(now),
-  };
-}
-
-type PlanRow = { label: string; pct: number; resets: string };
-
-/** Claude's limits as of `now`: a window whose reset has passed is back to 0. */
-function claudePlan(now: Date): PlanRow[] {
-  const plan = State.usage?.claudePlan;
-  if (!plan) return [];
-  const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  const rows: PlanRow[] = [];
-  for (const [label, w, weekly] of [["5 hours", plan.fiveHour, false], ["week", plan.sevenDay, true]] as const) {
-    if (!w) continue;
-    const at = new Date(w.resetsAt * 1000);
-    const live = at > now;
-    rows.push({
-      label,
-      pct: live ? w.usedPct : 0,
-      resets: live ? (weekly ? `${at.toLocaleDateString("en-US", { weekday: "short" })} ${time(at)}` : time(at)) : "",
-    });
-  }
-  return rows;
-}
-
-function tokens(n: number): string {
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
-  return String(n);
-}
-
-const pct = (n: number) => `${n < 10 ? n.toFixed(1).replace(/\.0$/, "") : Math.round(n)}%`;
-const title = (s: string) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
-
-/** Line: "Cursor 70% · Kiro 1.9% · Claude 42%" (or Claude's tokens when its
- *  limits are unknown); tooltip: the details. */
-function usageText(u: NonNullable<typeof State.usage>, plan: PlanRow[]): [string, string] {
-  const bits: string[] = [];
-  const tips: string[] = [];
-  if (u.cursor) {
-    const c = u.cursor;
-    bits.push(`Cursor ${pct(c.percent)}`);
-    const parts = [c.auto != null ? `Auto ${pct(c.auto)}` : "", c.api != null ? `API ${pct(c.api)}` : ""].filter(Boolean);
-    tips.push(`Cursor ${c.plan}: ${pct(c.percent)} used${parts.length ? ` (${parts.join(", ")})` : ""}${c.resets ? `, resets ${c.resets}` : ""}`);
-  }
-  if (u.kiro) {
-    const k = u.kiro;
-    bits.push(`Kiro ${pct(k.limit ? (k.used / k.limit) * 100 : 0)}`);
-    tips.push(`${title(k.plan)}: ${k.used} of ${k.limit} credits, resets ${k.resets}`);
-  }
-  if (plan.length) {
-    bits.push(`Claude ${pct(Math.max(...plan.map((r) => r.pct)))}`);
-    tips.push(`Claude plan: ${plan.map((r) => `${pct(r.pct)} of ${r.label}${r.resets ? ` (resets ${r.resets})` : ""}`).join(", ")}`);
-  } else if (u.claudeTokens) {
-    bits.push(`Claude ${tokens(u.claudeTokens)}`);
-  }
-  if (u.claudeTokens) tips.push(`Claude Code: ${u.claudeTokens.toLocaleString()} tokens today`);
-  return [bits.join(" · "), tips.join("\n")];
-}
-
-/** Changes whenever the home card would draw differently. */
-export function homeKey(): string {
-  return JSON.stringify(homeSummary());
-}
-
-function homeCard(task: AgentTask, openSettings: () => void): HTMLElement {
-  const s = homeSummary();
-  const w = (s.weather?.data ?? {}) as Record<string, unknown>;
-  const hasWeather = typeof w.temp === "number";
-  const city = State.settings.weatherCity.trim();
-
-  const now = hasWeather
-    ? (() => {
-        const [icon, word] = sky(Number(w.code ?? 0), w.isDay !== false);
-        return h("span", { class: "home-now", title: word }, svg(icon, 13, { stroke: 1.8 }), h("span", { text: deg(w.temp) }));
-      })()
-    : undefined;
-  const head = header(task.color, hasWeather ? String(w.city ?? city) : "Today", "", now);
-
-  const weatherLine = hasWeather
-    ? h("div", { class: "int-status" }, h("span", {
-        text: `H ${deg(w.max)} · L ${deg(w.min)}${typeof w.rain === "number" ? ` · Rain ${w.rain}%` : ""}`,
-      }))
-    : city && s.weather?.error
-      ? h("div", { class: "int-status" }, dot("#F4505E", 5), h("span", { class: "int-name", text: s.weather.error }))
-      : city
-        ? h("div", { class: "int-status" }, h("span", { text: "Loading weather…" }))
-        : h("div", { class: "int-status" }, h("button", {
-            class: "link-btn", style: "color:#8e939c;padding:0", text: "Set a city for weather…", onclick: openSettings,
-          }));
-
-  const taskLine = h("div", { class: "int-status" },
-    svg(ICONS.checklist, 11, { stroke: 1.8 }),
-    s.next
-      ? h("span", { class: "int-name", text: s.next.when ? `${s.next.when} · ${s.next.title}` : s.next.title })
-      : h("span", { text: "No open tasks" }),
-  );
-
-  const bits: string[] = [];
-  if (s.habits) bits.push(`Habits ${s.habitsDone}/${s.habits}`);
-  bits.push(s.agents ? `${s.agents} agent${s.agents > 1 ? "s" : ""}` : "No agents");
-  if (s.waiting) bits.push(`${s.waiting} waiting`);
-  const statusLine = h("div", { class: "int-status" },
-    dot(s.waiting ? "#F5A524" : s.agents ? "#22C55E" : "#6b7079", 5),
-    h("span", { class: "int-name", text: bits.join(" · ") }),
-  );
-
-  const [used, tip] = s.usage ? usageText(s.usage, s.plan) : ["", ""];
-  const usageLine = used
-    ? h("div", { class: "int-status", title: tip }, svg(ICONS.timer, 11), h("span", { class: "int-name", text: used }))
-    : null;
-
-  return h("div", { class: "int-card" }, head, weatherLine, taskLine, statusLine, usageLine);
-}
-
 export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHooks): HTMLElement {
-  if (task.id === HOME_ID) return homeCard(task, hooks.openSettings);
   if (task.id === "integration_n8n") {
     const hasActivity = task.steps.length > 0 && (task.state === "finished" || task.state === "error");
     return hooks.detailOpen && hasActivity
@@ -665,14 +455,24 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
   if (task.id === "integration_vercel" && hasIntegrationData(task.id)) {
     return hooks.detailOpen ? vercelDetail(hooks.closeDetail) : vercelCard(hooks.openDetail);
   }
-  if (task.id === "integration_github" && hasIntegrationData(task.id)) {
-    return hooks.detailOpen && contributions() ? githubActivityDetail(hooks.closeDetail) : githubCard(hooks.openDetail);
-  }
   if (!hasIntegrationData(task.id)) return idleCard(task, hooks.openSettings);
+
+  // With the pulse in, GitHub gets the Mac's richer card and its lists.
+  if (task.id === "integration_github") {
+    const d = get(task.id);
+    const pulse = readPulse(d);
+    if (pulse) {
+      return hooks.detailOpen
+        ? githubDetail(pulse, readStats(d), readActivity(d), hooks.closeDetail)
+        : githubPulseCard(pulse, readStats(d), readActivity(d), hooks.openDetail);
+    }
+  }
 
   switch (task.id) {
     case "integration_resend":
       return resendCard();
+    case "integration_github":
+      return githubCard();
     case "integration_stripe":
       return stripeCard();
     case "integration_notion":

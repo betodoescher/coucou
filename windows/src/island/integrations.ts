@@ -2,83 +2,91 @@
 // pollers: a genuinely new item flips the pill to finished/error, badges it when
 // the pill isn't focused, plays a sound, and clears itself after 60 s.
 
-import { onEvent, Bridge, type ClaudePlan, type IntegrationUpdate } from "../core/bridge";
+import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
+import { gitHubAlert, type GitHubEvent } from "../core/github";
+import { availablePills } from "../core/pills";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
 
-/** Which Credential Manager key backs each pill. */
-const KEY_FOR: Record<string, string> = {
-  integration_stripe: "stripe-api-key",
-  integration_github: "github-token",
-  integration_vercel: "vercel-token",
-  integration_n8n: "n8n-api-key",
-  integration_resend: "resend-api-key",
-  integration_notion: "notion-api-key",
-  integration_calcom: "calcom-api-key",
-};
+const GITHUB = "integration_github";
 
 const clearTimers = new Map<string, number>();
 
 export function registerIntegrationHandlers(island: Island) {
   void onEvent<IntegrationUpdate>("integration", (update) => handle(island, update));
-  void onEvent<ClaudePlan>("claude-plan", setClaudePlan);
+  void onEvent<GitHubEvent[]>("github-alerts", handleGitHubAlerts);
   void refreshConfigured();
+  State.subscribe(refreshGitHubWhenShown);
 }
 
-/** Asks Rust which keys exist so the idle cards can say so. */
+/**
+ * AppState.handleGitHubEvents: the loudest event sets the badge — only while the
+ * GitHub pill isn't the one on screen — and plays its sound. Unlike the other
+ * integrations it leaves Mochi's state alone and the badge stays until the pill
+ * is focused, as on macOS.
+ */
+export function handleGitHubAlerts(events: GitHubEvent[]) {
+  if (State.paused) return;
+  const alert = gitHubAlert(events);
+  if (!alert) return;
+  const task = State.tasks.find((t) => t.id === GITHUB);
+  if (!task) return;
+  if (State.focusId !== GITHUB) task.pillBadge = alert.badge;
+  Sound.play(alert.sound);
+  State.notify();
+}
+
+let gitHubShown = false;
+
+/** The GitHub card just came on screen (focused, island opened): refresh it if stale. */
+function refreshGitHubWhenShown() {
+  const shown = State.mode === "expanded" && State.focusTask?.id === GITHUB;
+  if (shown && !gitHubShown) void Bridge.githubRefresh("pulse");
+  gitHubShown = shown;
+}
+
+/**
+ * Whether each pill is connected, so its idle card can say so: a key in the
+ * credential store for a service or a chat provider, the hooks in place for a
+ * pill fed by hook events (Mac #183), nothing at all for Claude Desktop.
+ */
 export async function refreshConfigured() {
-  for (const [id, key] of Object.entries(KEY_FOR)) {
-    const present = (await Bridge.secretPresent(key)) ?? false;
+  const hooks = (await Bridge.agentHooksStatus()) ?? null;
+  for (const def of availablePills(State.os)) {
+    let configured: boolean;
+    switch (def.connect.kind) {
+      case "key":
+        configured = (await Bridge.secretPresent(def.connect.key)) ?? false;
+        break;
+      case "hooks":
+        // Without an answer from Rust (a plain browser), the Claude Code pill
+        // falls back to what the settings say about its hooks.
+        configured = hooks?.[def.id] ??
+          (def.id === "integration_claude" ? State.settings.hooksInstalled : false);
+        break;
+      case "server":
+        // A local model server counts once the chat is connected to it.
+        configured = State.settings[def.connect.field] !== "";
+        break;
+      case "none":
+        configured = true;
+        break;
+    }
+    const info = State.integrations[def.id] ?? { data: {}, error: null, loaded: false, configured: false };
+    State.integrations[def.id] = { ...info, configured };
+  }
+  State.notify();
+}
+
+/** Only the hook-driven pills, for when the island opens: a few small file reads. */
+export async function refreshHookPills() {
+  const hooks = await Bridge.agentHooksStatus();
+  if (!hooks) return;
+  for (const [id, present] of Object.entries(hooks)) {
     const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
     State.integrations[id] = { ...info, configured: present };
   }
-  State.notify();
-}
-
-// ── Today's AI usage ──────────────────────────────────────────────────────────
-
-let usageReadAt = 0;
-let plansReadAt = -Infinity;
-
-/** Claude's log at most every 30 s (or when an agent just finished); the
- *  Cursor and Kiro CLIs, which take seconds to start, every 10 minutes. */
-export async function refreshUsage(force = false) {
-  const now = performance.now();
-  if (now - plansReadAt >= 600_000) {
-    plansReadAt = now;
-    void Bridge.planUsage().then((plans) => {
-      if (!plans) return;
-      State.usage = {
-        claudeTokens: State.usage?.claudeTokens ?? 0,
-        claudePlan: State.usage?.claudePlan ?? null,
-        ...plans,
-      };
-      State.notify();
-    });
-  }
-  if (!force && now - usageReadAt < 30_000) return;
-  usageReadAt = now;
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  const read = await Bridge.usageToday(midnight.getTime());
-  State.usage = {
-    cursor: State.usage?.cursor ?? null,
-    kiro: State.usage?.kiro ?? null,
-    claudeTokens: read?.claudeTokens ?? 0,
-    claudePlan: read?.claudePlan ?? State.usage?.claudePlan ?? null,
-  };
-  State.notify();
-}
-
-/** Claude Code just handed its status line new limits. */
-function setClaudePlan(plan: ClaudePlan) {
-  State.usage = {
-    claudeTokens: State.usage?.claudeTokens ?? 0,
-    cursor: State.usage?.cursor ?? null,
-    kiro: State.usage?.kiro ?? null,
-    claudePlan: plan,
-  };
   State.notify();
 }
 
@@ -104,17 +112,9 @@ function handle(island: Island, update: IntegrationUpdate) {
         task.pillBadge = event.success ? "finished" : "error";
       }
       Sound.play(event.success ? "finish" : "error");
-      if (event.alert) {
-        // A failed CI run or a review request: open on this pill's card.
-        State.focusId = update.id;
-        task.pillBadge = null;
-        if (State.mode === "expanded") island.setView("overview");
-        else island.alert("overview");
-      } else {
-        // Same as the Swift pollers: show the compact island so the badge is seen,
-        // but never steal the screen for a successful deploy.
-        island.reveal();
-      }
+      // Same as the Swift pollers: show the compact island so the badge is seen,
+      // but never steal the screen for a successful deploy.
+      island.reveal();
 
       const existing = clearTimers.get(update.id);
       if (existing != null) window.clearTimeout(existing);

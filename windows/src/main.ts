@@ -3,13 +3,22 @@
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
-import type { ShortcutAction } from "./core/shortcuts";
 import { State, type Settings } from "./core/state";
-import { Todos } from "./core/todoStore";
-import { nextWake, ringsAt } from "./core/todos";
 import { Island } from "./island/island";
 import { registerHookHandlers } from "./island/hooks";
+import { registerPhoneLink } from "./island/phone-link";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
+import { registerShortcutHandlers } from "./island/shortcuts";
+import { registerVoiceHandlers } from "./island/voice";
+import { applySpotify, registerSpotifyHandlers } from "./island/spotify";
+import { SPOTIFY_ID } from "./core/spotify";
+import { Recap } from "./recap/recap";
+import { onLanguageChange, resolveLanguage, setLanguage, systemLanguages } from "./i18n/i18n";
+
+/** Shows the language Settings asks for ("" = the system's, when Coucou has it). */
+function applyLanguage() {
+  setLanguage(resolveLanguage(State.settings.language, systemLanguages()));
+}
 
 async function main() {
   const root = document.getElementById("root");
@@ -17,19 +26,38 @@ async function main() {
 
   void Sound.preload();
 
+  // Before the island exists: its canvases size their bitmaps from the pixel
+  // ratio once, so the zoom correction has to land first. If zoom was adjusted,
+  // wait until the ratio updates (or up to 500ms) so nothing is sized against
+  // the stale value.
+  const dprBefore = window.devicePixelRatio || 1;
+  const zoomChanged = await Bridge.fitZoom(dprBefore);
+  if (zoomChanged) {
+    for (let i = 0; i < 20 && window.devicePixelRatio === dprBefore; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
   const island = new Island(root);
 
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
   }
+  // A language change redraws the island in place: the texts given as tl(…)
+  // relabel themselves (views/dom.ts) and the views redraw the rest on this
+  // sync. Nothing is rebuilt, so tasks, steps and the chat stay as they are.
+  onLanguageChange(() => State.notify());
+  applyLanguage();
+  // Rust shows the tray and its errors in the same language as the webview.
+  void Bridge.setSystemLanguages(systemLanguages());
   island.applySettings();
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
-  island.setMovable(boot?.islandMovable ?? false);
-  await island.wireDesktop(boot?.desktopMochi ?? false, boot?.cursorPoll ?? true);
+  await island.desktop.init();
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+  await onEvent<boolean>("pointer-inside", (inside) => island.setPointerInside(inside));
 
   /** Pause has to reach Rust too, or the pollers keep calling out. */
   const setPaused = (on: boolean) => {
@@ -48,6 +76,14 @@ async function main() {
         setPaused(false);
         island.alert(State.defaultView());
         break;
+      case "recap":
+        setPaused(false);
+        void Recap.open(island);
+        break;
+      case "wardrobe":
+        setPaused(false);
+        island.alert("wardrobe");
+        break;
       case "pause":
         setPaused(!State.paused);
         if (State.paused) island.fsm.forceHidden();
@@ -56,55 +92,65 @@ async function main() {
     }
   });
 
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
+  const checkZoom = async () => {
+    const dpr = window.devicePixelRatio || 1;
+    await Bridge.fitZoom(dpr);
+  };
 
-  await onEvent<ShortcutAction>("shortcut", (action) => island.onShortcut(action));
+  await onEvent<null>("screen-changed", async () => {
+    await checkZoom();
+    void Bridge.reposition();
+  });
+
+  const mediaQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  mediaQuery.addEventListener?.("change", () => void checkZoom());
+
+  window.addEventListener(
+    "wheel",
+    (e) => {
+      if (e.ctrlKey) e.preventDefault();
+    },
+    { passive: false }
+  );
+  window.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && (e.key === "+" || e.key === "-" || e.key === "=" || e.key === "0")) {
+      e.preventDefault();
+    }
+  });
+
+  // Settings → Reload sounds: read the sounds folder again, and let them hear it.
+  await onEvent<null>("sounds-changed", () => {
+    void Sound.reload().then(() => Sound.play("pop"));
+  });
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
-    const cityChanged = (s.weatherCity ?? "") !== State.settings.weatherCity;
+    const previousMain = State.mainPillId;
     State.settings = { ...State.settings, ...s };
-    if (cityChanged) {
-      delete State.integrations.weather;
-      if (State.settings.weatherCity.trim()) void Bridge.refreshIntegration("weather");
-    }
+    applyLanguage();
     island.applySettings();
     State.loadIntegrationTasks();
+    // A new main tool comes to the front, as on macOS.
+    if (State.mainPillId !== previousMain) State.setFocus(State.mainPillId);
     void refreshConfigured();
   });
 
-  // One timer to the next 9:00/14:00 slot or task time, no polling; re-aimed
-  // whenever the list changes. A reminder missed by more than half an hour
-  // (the machine was asleep) is skipped, not replayed.
-  let reminderTimer = 0;
-  let lastRing = 0;
-  const scheduleReminder = () => {
-    window.clearTimeout(reminderTimer);
-    // From the last ring, so a timer that fires a hair early never rings twice.
-    const at = nextWake(Todos.doc, new Date(Math.max(Date.now(), lastRing)));
-    reminderTimer = window.setTimeout(() => {
-      lastRing = at.getTime();
-      const late = Date.now() - at.getTime() > 30 * 60_000;
-      if (!State.paused && !late && ringsAt(Todos.doc, at).length) {
-        State.todayTab = "tasks";
-        island.alert("todos");
-      }
-      scheduleReminder();
-    }, at.getTime() - Date.now());
-  };
-
-  const syncTodoPill = () => State.setTodoPill(Todos.doc.items.filter((i) => !i.done).length);
-  Todos.subscribe(() => {
-    syncTodoPill();
-    scheduleReminder();
-    State.notify();
-  });
-  await Todos.init();
-  syncTodoPill();
-  scheduleReminder();
-
   registerHookHandlers(island);
+  registerPhoneLink(island);
   registerIntegrationHandlers(island);
+  registerShortcutHandlers(island, () => setPaused(false));
+  registerVoiceHandlers();
+  registerSpotifyHandlers(island);
+  // Rust may have read Spotify before this page listened: ask once.
+  if (State.settings.activeIntegrations.includes(SPOTIFY_ID)) {
+    void Bridge.spotifyRefresh().then((s) => s && applySpotify(island, s));
+  }
+
+  // Monday recap: app start (greeting over), an agent starting work, waking up.
+  const checkRecap = () => void Recap.check(island);
+  island.onGreetingDone = checkRecap;
+  island.onWake = checkRecap;
+  await onEvent<null>("recap-check", checkRecap);
 
   island.launch();
 
