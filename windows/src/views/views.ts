@@ -114,7 +114,7 @@ const PILL_W = 34;
 const PILL_GAP = 5;
 
 export function buildHeader(actions: ViewActions): ViewHost {
-  const tabHome = h("button", { class: "tab", title: tl("Overview"), onclick: () => go("overview") }, svg(ICONS.house, 13));
+  const tabHome = h("button", { class: "tab", title: tl("Overview"), onclick: () => goHome() }, svg(ICONS.house, 13));
   const tabChat = h("button", { class: "tab", title: tl("Ask"), onclick: () => go("prompt") }, svg(ICONS.bubble, 13));
   const todoCount = h("span", { class: "tab-count" });
   const tabTodos = h(
@@ -136,6 +136,12 @@ export function buildHeader(actions: ViewActions): ViewHost {
   function go(v: IslandViewName) {
     actions.blip();
     actions.setView(v);
+  }
+
+  /** With the Today pill on, home is its card. */
+  function goHome() {
+    if (State.tasks.some((x) => x.id === HOME_ID)) actions.setFocus(HOME_ID);
+    go("overview");
   }
 
   // The other pills sit in the top bar; those that don't fit go under "+N".
