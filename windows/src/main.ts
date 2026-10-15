@@ -12,6 +12,8 @@ import { registerShortcutHandlers } from "./island/shortcuts";
 import { registerVoiceHandlers } from "./island/voice";
 import { applySpotify, registerSpotifyHandlers } from "./island/spotify";
 import { SPOTIFY_ID } from "./core/spotify";
+import { Todos } from "./core/todoStore";
+import { nextWake, ringsAt } from "./core/todos";
 import { Recap } from "./recap/recap";
 import { onLanguageChange, resolveLanguage, setLanguage, systemLanguages } from "./i18n/i18n";
 
@@ -151,6 +153,35 @@ async function main() {
   island.onGreetingDone = checkRecap;
   island.onWake = checkRecap;
   await onEvent<null>("recap-check", checkRecap);
+
+  // The Today tab (this fork only). One timer to the next 9:00/14:00 slot or
+  // task time, no polling; re-aimed whenever the list changes. A reminder
+  // missed by more than half an hour (the machine was asleep) is skipped.
+  let reminderTimer = 0;
+  let lastRing = 0;
+  const scheduleReminder = () => {
+    window.clearTimeout(reminderTimer);
+    // From the last ring, so a timer that fires a hair early never rings twice.
+    const at = nextWake(Todos.doc, new Date(Math.max(Date.now(), lastRing)));
+    reminderTimer = window.setTimeout(() => {
+      lastRing = at.getTime();
+      const late = Date.now() - at.getTime() > 30 * 60_000;
+      if (!State.paused && !late && ringsAt(Todos.doc, at).length) {
+        State.todayTab = "tasks";
+        island.alert("todos");
+      }
+      scheduleReminder();
+    }, at.getTime() - Date.now());
+  };
+  const syncTodoPill = () => State.setTodoPill(Todos.doc.items.filter((i) => !i.done).length);
+  Todos.subscribe(() => {
+    syncTodoPill();
+    scheduleReminder();
+    State.notify();
+  });
+  await Todos.init();
+  syncTodoPill();
+  scheduleReminder();
 
   island.launch();
 

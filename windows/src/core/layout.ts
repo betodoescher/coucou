@@ -23,6 +23,7 @@ export type IslandViewName =
   | "settings"
   | "greeting"
   | "recap"
+  | "todos"
   | "wardrobe";
 
 export type BotStateName =
@@ -93,6 +94,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   // to the shared image.
   recap: { height: 184, botX: 62, botY: null, botDiameter: 58, agentMode: "column" },
   wardrobe: { height: 160, botX: 68, botY: null, botDiameter: 58, agentMode: "none" },
+  // This fork only. Height follows the rows (todosHeight); Mochi stays by the chips and the field.
+  todos: { height: 178, botX: 46, botY: 86, botDiameter: 40, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -105,6 +108,11 @@ export const QUESTION_PICKER_H = 200;
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
+}
+
+/** The Today tab grows with its rows, then scrolls. */
+export function todosHeight(rows: number): number {
+  return Math.min(300, 150 + Math.max(1, rows) * 28);
 }
 
 export function islandSize(

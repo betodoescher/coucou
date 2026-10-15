@@ -4537,6 +4537,354 @@
    "pt-BR": "Converse usando um plano que você já paga, pela CLI do Cursor ou do Kiro. Ela roda em modo somente leitura numa pasta privada: pode responder, nunca agir neste computador. Com um plano ligado, uma pergunta que ele não consiga responder passa para o próximo plano e depois para a sua chave da Anthropic.",
    "ru": "Общайтесь в чате по тарифу, за который вы уже платите, через CLI Cursor или Kiro. Он работает только на чтение в отдельной папке: может отвечать, но никогда ничего не делает на этом компьютере. Когда тариф включён, вопрос, на который он не может ответить, переходит к следующему тарифу, а затем к вашему ключу Anthropic.",
    "id": "Mengobrol dengan paket yang sudah Anda bayar, lewat CLI Cursor atau Kiro. Berjalan hanya-baca di folder pribadi: bisa menjawab, tidak pernah bertindak di komputer ini. Dengan paket aktif, pertanyaan yang tidak bisa dijawabnya diteruskan ke paket berikutnya, lalu ke kunci Anthropic Anda."
+  },
+  "{count} tasks": {
+   "zh-Hans": {
+    "other": "{count} 个任务"
+   },
+   "hi": {
+    "one": "{count} काम",
+    "other": "{count} काम"
+   },
+   "es": {
+    "one": "{count} tarea",
+    "other": "{count} tareas"
+   },
+   "ar": {
+    "zero": "{count} مهمة",
+    "one": "مهمة واحدة",
+    "two": "مهمتان",
+    "few": "{count} مهام",
+    "many": "{count} مهمة",
+    "other": "{count} مهمة"
+   },
+   "fr": {
+    "one": "{count} tâche",
+    "other": "{count} tâches"
+   },
+   "bn": {
+    "one": "{count}টি কাজ",
+    "other": "{count}টি কাজ"
+   },
+   "pt-BR": {
+    "one": "{count} tarefa",
+    "other": "{count} tarefas"
+   },
+   "ru": {
+    "one": "{count} задача",
+    "few": "{count} задачи",
+    "many": "{count} задач",
+    "other": "{count} задачи"
+   },
+   "id": {
+    "other": "{count} tugas"
+   }
+  },
+  "{count} days in a row": {
+   "zh-Hans": {
+    "other": "连续 {count} 天"
+   },
+   "hi": {
+    "one": "लगातार {count} दिन",
+    "other": "लगातार {count} दिन"
+   },
+   "es": {
+    "one": "{count} día seguido",
+    "other": "{count} días seguidos"
+   },
+   "ar": {
+    "zero": "{count} يوم متتالٍ",
+    "one": "يوم واحد متتالٍ",
+    "two": "يومان متتاليان",
+    "few": "{count} أيام متتالية",
+    "many": "{count} يومًا متتاليًا",
+    "other": "{count} يوم متتالٍ"
+   },
+   "fr": {
+    "one": "{count} jour d’affilée",
+    "other": "{count} jours d’affilée"
+   },
+   "bn": {
+    "one": "টানা {count} দিন",
+    "other": "টানা {count} দিন"
+   },
+   "pt-BR": {
+    "one": "{count} dia seguido",
+    "other": "{count} dias seguidos"
+   },
+   "ru": {
+    "one": "{count} день подряд",
+    "few": "{count} дня подряд",
+    "many": "{count} дней подряд",
+    "other": "{count} дня подряд"
+   },
+   "id": {
+    "other": "{count} hari berturut-turut"
+   }
+  },
+  "Tomorrow": {
+   "zh-Hans": "明天",
+   "hi": "कल",
+   "es": "Mañana",
+   "ar": "غدًا",
+   "fr": "Demain",
+   "bn": "আগামীকাল",
+   "pt-BR": "Amanhã",
+   "ru": "Завтра",
+   "id": "Besok"
+  },
+  "No date": {
+   "zh-Hans": "无日期",
+   "hi": "कोई तारीख नहीं",
+   "es": "Sin fecha",
+   "ar": "بلا تاريخ",
+   "fr": "Sans date",
+   "bn": "তারিখ নেই",
+   "pt-BR": "Sem data",
+   "ru": "Без даты",
+   "id": "Tanpa tanggal"
+  },
+  "New habit…": {
+   "zh-Hans": "新习惯…",
+   "hi": "नई आदत…",
+   "es": "Nuevo hábito…",
+   "ar": "عادة جديدة…",
+   "fr": "Nouvelle habitude…",
+   "bn": "নতুন অভ্যাস…",
+   "pt-BR": "Novo hábito…",
+   "ru": "Новая привычка…",
+   "id": "Kebiasaan baru…"
+  },
+  "Not done today": {
+   "zh-Hans": "今天未完成",
+   "hi": "आज नहीं किया",
+   "es": "No hecho hoy",
+   "ar": "لم يُنجز اليوم",
+   "fr": "Pas fait aujourd’hui",
+   "bn": "আজ করা হয়নি",
+   "pt-BR": "Não feito hoje",
+   "ru": "Сегодня не сделано",
+   "id": "Belum dilakukan hari ini"
+  },
+  "Done today": {
+   "zh-Hans": "今天已完成",
+   "hi": "आज किया",
+   "es": "Hecho hoy",
+   "ar": "أُنجز اليوم",
+   "fr": "Fait aujourd’hui",
+   "bn": "আজ করা হয়েছে",
+   "pt-BR": "Feito hoje",
+   "ru": "Сегодня сделано",
+   "id": "Sudah dilakukan hari ini"
+  },
+  "No habits yet. Add one to tick it every day.": {
+   "zh-Hans": "还没有习惯。添加一个，每天打卡。",
+   "hi": "अभी कोई आदत नहीं। एक जोड़ें और हर दिन उस पर निशान लगाएँ।",
+   "es": "Aún no hay hábitos. Añade uno para marcarlo cada día.",
+   "ar": "لا توجد عادات بعد. أضف واحدة لتؤشّر عليها كل يوم.",
+   "fr": "Aucune habitude pour l’instant. Ajoutez-en une pour la cocher chaque jour.",
+   "bn": "এখনো কোনো অভ্যাস নেই। প্রতিদিন টিক দিতে একটি যোগ করুন।",
+   "pt-BR": "Nenhum hábito ainda. Adicione um para marcar todo dia.",
+   "ru": "Привычек пока нет. Добавьте одну и отмечайте её каждый день.",
+   "id": "Belum ada kebiasaan. Tambahkan satu untuk dicentang setiap hari."
+  },
+  "Write a note…": {
+   "zh-Hans": "写条笔记…",
+   "hi": "नोट लिखें…",
+   "es": "Escribe una nota…",
+   "ar": "اكتب ملاحظة…",
+   "fr": "Écrire une note…",
+   "bn": "একটি নোট লিখুন…",
+   "pt-BR": "Escreva uma nota…",
+   "ru": "Напишите заметку…",
+   "id": "Tulis catatan…"
+  },
+  "Shift+Enter for a new line": {
+   "zh-Hans": "Shift+Enter 换行",
+   "hi": "नई पंक्ति के लिए Shift+Enter",
+   "es": "Shift+Enter para una nueva línea",
+   "ar": "Shift+Enter لسطر جديد",
+   "fr": "Maj+Entrée pour une nouvelle ligne",
+   "bn": "নতুন লাইনের জন্য Shift+Enter",
+   "pt-BR": "Shift+Enter para uma nova linha",
+   "ru": "Shift+Enter — новая строка",
+   "id": "Shift+Enter untuk baris baru"
+  },
+  "No notes yet. Type one above and press Enter.": {
+   "zh-Hans": "还没有笔记。在上方输入并按 Enter。",
+   "hi": "अभी कोई नोट नहीं। ऊपर लिखें और Enter दबाएँ।",
+   "es": "Aún no hay notas. Escribe una arriba y pulsa Enter.",
+   "ar": "لا توجد ملاحظات بعد. اكتب واحدة في الأعلى واضغط Enter.",
+   "fr": "Aucune note pour l’instant. Tapez-en une ci-dessus et appuyez sur Entrée.",
+   "bn": "এখনো কোনো নোট নেই। ওপরে একটি লিখে Enter চাপুন।",
+   "pt-BR": "Nenhuma nota ainda. Digite uma acima e pressione Enter.",
+   "ru": "Заметок пока нет. Введите заметку выше и нажмите Enter.",
+   "id": "Belum ada catatan. Ketik satu di atas lalu tekan Enter."
+  },
+  "Habits": {
+   "zh-Hans": "习惯",
+   "hi": "आदतें",
+   "es": "Hábitos",
+   "ar": "العادات",
+   "fr": "Habitudes",
+   "bn": "অভ্যাস",
+   "pt-BR": "Hábitos",
+   "ru": "Привычки",
+   "id": "Kebiasaan"
+  },
+  "Notes": {
+   "zh-Hans": "笔记",
+   "hi": "नोट्स",
+   "es": "Notas",
+   "ar": "الملاحظات",
+   "fr": "Notes",
+   "bn": "নোট",
+   "pt-BR": "Notas",
+   "ru": "Заметки",
+   "id": "Catatan"
+  },
+  "No priority": {
+   "zh-Hans": "无优先级",
+   "hi": "कोई प्राथमिकता नहीं",
+   "es": "Sin prioridad",
+   "ar": "بلا أولوية",
+   "fr": "Sans priorité",
+   "bn": "অগ্রাধিকার নেই",
+   "pt-BR": "Sem prioridade",
+   "ru": "Без приоритета",
+   "id": "Tanpa prioritas"
+  },
+  "Low": {
+   "zh-Hans": "低",
+   "hi": "कम",
+   "es": "Baja",
+   "ar": "منخفضة",
+   "fr": "Basse",
+   "bn": "কম",
+   "pt-BR": "Baixa",
+   "ru": "Низкий",
+   "id": "Rendah"
+  },
+  "Medium": {
+   "zh-Hans": "中",
+   "hi": "मध्यम",
+   "es": "Media",
+   "ar": "متوسطة",
+   "fr": "Moyenne",
+   "bn": "মাঝারি",
+   "pt-BR": "Média",
+   "ru": "Средний",
+   "id": "Sedang"
+  },
+  "High": {
+   "zh-Hans": "高",
+   "hi": "उच्च",
+   "es": "Alta",
+   "ar": "عالية",
+   "fr": "Haute",
+   "bn": "উচ্চ",
+   "pt-BR": "Alta",
+   "ru": "Высокий",
+   "id": "Tinggi"
+  },
+  "Due day": {
+   "zh-Hans": "截止日期",
+   "hi": "नियत दिन",
+   "es": "Día de vencimiento",
+   "ar": "يوم الاستحقاق",
+   "fr": "Jour d’échéance",
+   "bn": "নির্ধারিত দিন",
+   "pt-BR": "Dia do prazo",
+   "ru": "Срок",
+   "id": "Hari tenggat"
+  },
+  "Pick a date…": {
+   "zh-Hans": "选择日期…",
+   "hi": "तारीख चुनें…",
+   "es": "Elegir una fecha…",
+   "ar": "اختر تاريخًا…",
+   "fr": "Choisir une date…",
+   "bn": "একটি তারিখ বাছুন…",
+   "pt-BR": "Escolher uma data…",
+   "ru": "Выбрать дату…",
+   "id": "Pilih tanggal…"
+  },
+  "Remind me at": {
+   "zh-Hans": "提醒时间",
+   "hi": "मुझे याद दिलाएँ",
+   "es": "Recordarme a las",
+   "ar": "ذكّرني في",
+   "fr": "Me le rappeler à",
+   "bn": "আমাকে মনে করিয়ে দিন",
+   "pt-BR": "Lembrar às",
+   "ru": "Напомнить в",
+   "id": "Ingatkan saya pukul"
+  },
+  "Priority": {
+   "zh-Hans": "优先级",
+   "hi": "प्राथमिकता",
+   "es": "Prioridad",
+   "ar": "الأولوية",
+   "fr": "Priorité",
+   "bn": "অগ্রাধিকার",
+   "pt-BR": "Prioridade",
+   "ru": "Приоритет",
+   "id": "Prioritas"
+  },
+  "Add a task…": {
+   "zh-Hans": "添加任务…",
+   "hi": "काम जोड़ें…",
+   "es": "Añadir una tarea…",
+   "ar": "أضف مهمة…",
+   "fr": "Ajouter une tâche…",
+   "bn": "একটি কাজ যোগ করুন…",
+   "pt-BR": "Adicionar uma tarefa…",
+   "ru": "Добавить задачу…",
+   "id": "Tambah tugas…"
+  },
+  "Mark as not done": {
+   "zh-Hans": "标记为未完成",
+   "hi": "अधूरा चिह्नित करें",
+   "es": "Marcar como no hecha",
+   "ar": "وضع علامة غير منجزة",
+   "fr": "Marquer comme non faite",
+   "bn": "অসম্পূর্ণ হিসেবে চিহ্নিত করুন",
+   "pt-BR": "Marcar como não feita",
+   "ru": "Отметить как невыполненную",
+   "id": "Tandai belum selesai"
+  },
+  "Nothing due today.": {
+   "zh-Hans": "今天没有到期的任务。",
+   "hi": "आज कुछ भी नियत नहीं है।",
+   "es": "Nada vence hoy.",
+   "ar": "لا شيء مستحق اليوم.",
+   "fr": "Rien à faire aujourd’hui.",
+   "bn": "আজ কিছুই নির্ধারিত নেই।",
+   "pt-BR": "Nada para hoje.",
+   "ru": "На сегодня ничего нет.",
+   "id": "Tidak ada tenggat hari ini."
+  },
+  "No tasks yet. Type one above and press Enter.": {
+   "zh-Hans": "还没有任务。在上方输入并按 Enter。",
+   "hi": "अभी कोई काम नहीं। ऊपर लिखें और Enter दबाएँ।",
+   "es": "Aún no hay tareas. Escribe una arriba y pulsa Enter.",
+   "ar": "لا توجد مهام بعد. اكتب واحدة في الأعلى واضغط Enter.",
+   "fr": "Aucune tâche pour l’instant. Tapez-en une ci-dessus et appuyez sur Entrée.",
+   "bn": "এখনো কোনো কাজ নেই। ওপরে একটি লিখে Enter চাপুন।",
+   "pt-BR": "Nenhuma tarefa ainda. Digite uma acima e pressione Enter.",
+   "ru": "Задач пока нет. Введите задачу выше и нажмите Enter.",
+   "id": "Belum ada tugas. Ketik satu di atas lalu tekan Enter."
+  },
+  "Could not save your tasks: {error}": {
+   "zh-Hans": "无法保存你的任务：{error}",
+   "hi": "आपके काम सहेजे नहीं जा सके: {error}",
+   "es": "No se pudieron guardar tus tareas: {error}",
+   "ar": "تعذّر حفظ مهامك: {error}",
+   "fr": "Impossible d’enregistrer vos tâches : {error}",
+   "bn": "আপনার কাজগুলো সংরক্ষণ করা যায়নি: {error}",
+   "pt-BR": "Não foi possível salvar suas tarefas: {error}",
+   "ru": "Не удалось сохранить задачи: {error}",
+   "id": "Tidak dapat menyimpan tugas Anda: {error}"
   }
  }
 }

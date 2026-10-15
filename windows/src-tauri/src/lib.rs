@@ -34,6 +34,7 @@ mod shortcuts;
 mod sounds;
 mod speech;
 mod spotify;
+mod todos;
 mod tray;
 mod voice;
 #[cfg(windows)]
@@ -521,6 +522,20 @@ fn chat_reset(chat: State<Chat>) {
     chat.reset();
 }
 
+/// The Today tab's tasks, habits and notes (this fork only).
+#[tauri::command]
+fn todos_load() -> todos::TodoDoc {
+    todos::load()
+}
+
+/// Validated and written atomically, then sent to every window.
+#[tauri::command]
+fn todos_save(app: AppHandle, doc: todos::TodoDoc) -> Result<(), String> {
+    todos::save(&doc)?;
+    let _ = app.emit("todos-changed", doc);
+    Ok(())
+}
+
 /// Settings → Chat: is the Cursor or Kiro CLI installed and signed in?
 #[tauri::command]
 async fn plan_status(provider: String) -> Result<plan_chat::PlanStatus, String> {
@@ -785,6 +800,8 @@ pub fn run() {
             local_set_key,
             chat_reset,
             plan_status,
+            todos_load,
+            todos_save,
             plan_login,
             ingest_file,
             secret_present,

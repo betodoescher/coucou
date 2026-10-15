@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { Settings } from "./state";
 import type { RecapHistory, RecapPrefs } from "../recap/summary";
 import type { SpotifyState } from "./spotify";
+import type { TodoDoc } from "./todos";
 
 export const IS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -336,6 +337,10 @@ export const Bridge = {
    * the provider only when it has a key (or a server address).
    */
   chatModels: (provider: string) => callOrThrow<ModelInfo[]>("chat_models", { provider }),
+  /** The Today tab's tasks, habits and notes (this fork only). */
+  todosLoad: () => call<TodoDoc>("todos_load"),
+  /** Validated and written atomically by Rust, then sent to every window as "todos-changed". */
+  todosSave: (doc: TodoDoc) => callOrThrow<void>("todos_save", { doc }),
   /** Whether a plan's CLI (Cursor, Kiro) is installed and signed in. */
   planStatus: (provider: string) => call<PlanStatus>("plan_status", { provider }),
   /** Opens the plan's browser sign-in through its CLI. */

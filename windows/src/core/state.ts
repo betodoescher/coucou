@@ -13,8 +13,14 @@ import type { Bindings } from "./shortcuts";
 import { DEFAULT_OUTFIT, type Outfit } from "../mochi/wardrobe";
 import { pillColor } from "./pill-colors";
 import { Spotify, musicPlaying } from "./spotify";
+import { tn } from "../i18n/i18n";
 
-export type AgentSource = "claudeCode" | "n8n" | "agent";
+export type AgentSource = "claudeCode" | "n8n" | "agent" | "todos";
+
+/** The Tasks pill (this fork only): shown while to-dos are open, opens the Today tab. */
+export const TODO_PILL_ID = "todos";
+/** The open panel of the Today tab. */
+export type TodayTab = "tasks" | "habits" | "notes";
 export type PillBadge = "approval" | "finished" | "error";
 
 export interface AgentTask {
@@ -228,6 +234,7 @@ class AppState {
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
+  todayTab: TodayTab = "tasks";
   pendingApproval: ApprovalInfo | null = null;
   /** The pill that was in front when the card came up; it comes back after. */
   focusBeforeApproval: string | null = null;
@@ -492,6 +499,30 @@ class AppState {
     const at = this.tasks.findIndex((x) => x.id === this.mainPillId) + 1;
     this.tasks.splice(at, 0, t);
     if (!this.focusId) this.focusId = t.id;
+    this.notify();
+  }
+
+  /** Shows the Tasks pill while `open` to-dos are left, labelled with the count. */
+  setTodoPill(open: number) {
+    const t = this.tasks.find((x) => x.id === TODO_PILL_ID);
+    if (open === 0) {
+      if (t) this.removeTask(TODO_PILL_ID);
+      return;
+    }
+    const name = tn("{count} task", "{count} tasks", open);
+    if (t) {
+      t.name = name;
+      this.notify();
+      return;
+    }
+    // After the main pill and the sessions, before the declared pills.
+    let at = this.tasks.findIndex((x) => x.id === this.mainPillId) + 1;
+    while (at < this.tasks.length && !pillDefinition(this.tasks[at].id)) at++;
+    this.tasks.splice(at, 0, {
+      id: TODO_PILL_ID, name, color: "#60A5FA",
+      state: "idle", stepIndex: 0, steps: [],
+      source: "todos", isIntegration: false,
+    });
     this.notify();
   }
 

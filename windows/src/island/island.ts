@@ -6,12 +6,12 @@ import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize,
+  islandSize, todosHeight,
   QUESTION_PICKER_H,
   type BotEmoteName, type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, TODO_PILL_ID } from "../core/state";
 import { SPOTIFY_ID, islandDances } from "../core/spotify";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
@@ -22,6 +22,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { closePlanCard, openPlanColor, planCardOpen } from "../views/usage";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
+import { todayRowCount } from "../views/today";
 import { IslandStateMachine } from "./fsm";
 import { refreshHookPills } from "./integrations";
 import { DesktopLink } from "./desktop";
@@ -162,8 +163,13 @@ export class Island {
       collapse: () => this.collapse(),
       foldApproval: () => this.foldApproval(),
       setFocus: (id) => {
-        State.setFocus(id);
         Sound.play("blip");
+        if (id === TODO_PILL_ID) {
+          State.todayTab = "tasks";
+          this.setView("todos");
+          return;
+        }
+        State.setFocus(id);
         // A pill with a waiting request opens on its card: going back to it
         // after looking at another pill brings the card up again.
         const req = State.pendingApproval;
@@ -648,6 +654,7 @@ export class Island {
     if (State.mode === "expanded" && State.view === "question" && State.pendingApproval?.questions) {
       h = QUESTION_PICKER_H;
     }
+    if (State.mode === "expanded" && State.view === "todos") h = todosHeight(todayRowCount());
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -1161,14 +1168,16 @@ export class Island {
       if (on) view.sync();
     }
 
-    // The chat is the only view with a text field, so it is the only time the
-    // island is allowed to take keyboard focus.
+    // The chat and the Today tab are the only views with a text field, so they
+    // are the only time the island is allowed to take keyboard focus.
     if (this.lastSyncedView !== State.view) {
-      const wasChat = this.lastSyncedView === "prompt";
+      const typing = (v: IslandViewName | null) => v === "prompt" || v === "todos";
+      const wasChat = typing(this.lastSyncedView);
       this.lastSyncedView = State.view;
-      if (State.view === "prompt") {
+      if (typing(State.view)) {
         void Bridge.focusWindow(true);
-        window.setTimeout(() => this.views.get("prompt")?.focus?.(), 120);
+        const view = State.view;
+        window.setTimeout(() => this.views.get(view)?.focus?.(), 120);
       } else if (wasChat) {
         void Bridge.focusWindow(false);
       }
