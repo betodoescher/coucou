@@ -158,6 +158,10 @@ export interface Settings {
   chatModels: Record<string, string>;
   /** City of the Today card's weather; empty asks nothing of Open-Meteo. */
   weatherCity: string;
+  /** The compact island hides after a minute without the mouse (this fork only). */
+  autoHide: boolean;
+  /** Where the island was dragged; Rust owns it, null is the top centre. */
+  islandOffset: [number, number] | null;
   /** The plans the chat may use through their CLIs ("cursor", "kiro"); with any on, a failed turn falls back. */
   planChats: string[];
   /** Model server addresses once connected; empty means not connected. */
@@ -221,6 +225,8 @@ export const DEFAULT_SETTINGS: Settings = {
   chatModels: {},
   planChats: [],
   weatherCity: "",
+  autoHide: true,
+  islandOffset: null,
   ollamaUrl: "",
   lmstudioUrl: "",
   customUrl: "",

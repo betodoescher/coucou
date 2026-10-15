@@ -106,6 +106,9 @@ export class Island {
 
   /** Where a press on Mochi started: moving past DRAG_THRESHOLD drags him out. */
   private botPress: { x: number; y: number } | null = null;
+  private movable = false;
+  /** A press on the open island's background, which may move the window. */
+  private islandDrag: { x: number; y: number; moved: boolean; busy: boolean } | null = null;
 
   /** The next reveal from hidden makes no peek (music starting, as on macOS). */
   private silentReveal = false;
@@ -319,6 +322,7 @@ export class Island {
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.openOnHover = State.settings.openOnHover;
+    this.fsm.autoHide = State.settings.autoHide;
     this.fsm.onTransition = (from, to) => {
       // The greeting is over, however it ended: back to his desktop spot.
       if (from === "coucou" && to !== "coucou") this.desktop.launch();
@@ -765,6 +769,13 @@ export class Island {
       if (this.isBotHit(e.clientX, e.clientY)) {
         this.cancelBotHover();
         this.engine.slap();
+        return;
+      }
+      const interactive = (e.target as Element | null)?.closest(
+        "button, input, textarea, select, a, [contenteditable]",
+      );
+      if (this.movable && e.button === 0 && !interactive) {
+        this.islandDrag = { x: e.clientX, y: e.clientY, moved: false, busy: false };
       }
     });
 
@@ -778,6 +789,10 @@ export class Island {
     window.addEventListener("mousemove", (e) => {
       if (this.desktop.carrying) {
         this.desktop.carry(e.clientX, e.clientY);
+        return;
+      }
+      if (this.islandDrag) {
+        this.dragIsland(e);
         return;
       }
       const press = this.botPress;
@@ -794,6 +809,8 @@ export class Island {
     });
     window.addEventListener("mouseup", (e) => {
       this.botPress = null;
+      if (this.islandDrag?.moved) void Bridge.saveIslandPosition();
+      this.islandDrag = null;
       if (this.desktop.carrying) this.desktop.carryEnd(e.clientX, e.clientY);
     });
 
@@ -1209,12 +1226,40 @@ export class Island {
     this.engine.setState(State.effectiveState);
   }
 
+  /** Lets the open island be dragged by its background. */
+  setMovable(on: boolean) {
+    this.movable = on;
+  }
+
+  /**
+   * The window moves with the pointer, so the grab point stays at the same
+   * client position: the gap to it is the whole step still to make. One step
+   * in flight at a time keeps a late move from being counted twice.
+   */
+  private dragIsland(e: MouseEvent) {
+    const d = this.islandDrag;
+    if (!d) return;
+    if (!(e.buttons & 1)) {
+      if (d.moved) void Bridge.saveIslandPosition();
+      this.islandDrag = null;
+      return;
+    }
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!d.moved && Math.hypot(dx, dy) <= DRAG_THRESHOLD) return;
+    d.moved = true;
+    if (d.busy) return;
+    d.busy = true;
+    void Bridge.moveIsland(dx, dy).finally(() => { d.busy = false; });
+  }
+
   /** Applies settings coming from Rust at boot. */
   applySettings() {
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     this.fsm.openOnHover = State.settings.openOnHover;
+    this.fsm.autoHide = State.settings.autoHide;
     State.notify();
   }
 

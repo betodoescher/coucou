@@ -52,6 +52,13 @@ pub struct Settings {
     /// City of the Today card's weather (this fork only); empty asks nothing
     /// of Open-Meteo.
     pub weather_city: String,
+    /// The compact island hides after a minute without the mouse; off, it
+    /// stays (this fork only).
+    pub auto_hide: bool,
+    /// Where the user dragged the island: top-left of the panel, in logical
+    /// pixels from the top-left of its display; None is the top centre. Owned
+    /// by Rust: save_settings never takes it from a page (this fork only).
+    pub island_offset: Option<(f64, f64)>,
     /// Addresses of the model servers once connected; empty means not connected.
     pub ollama_url: String,
     pub lmstudio_url: String,
@@ -153,6 +160,8 @@ impl Default for Settings {
             chat_models: BTreeMap::new(),
             plan_chats: Vec::new(),
             weather_city: String::new(),
+            auto_hide: true,
+            island_offset: None,
             ollama_url: String::new(),
             lmstudio_url: String::new(),
             custom_url: String::new(),
@@ -442,6 +451,8 @@ mod tests {
   "chatModels": { "ollama": "llama3.2", "openai": "gpt-x" },
   "planChats": ["kiro"],
   "weatherCity": "Florianópolis SC",
+  "autoHide": false,
+  "islandOffset": [120.5, 40.0],
   "ollamaUrl": "http://127.0.0.1:11434",
   "lmstudioUrl": "http://127.0.0.1:1234",
   "customUrl": "https://llm.example.com",
@@ -951,6 +962,8 @@ mod tests {
                 "chatModels",
                 "planChats",
                 "weatherCity",
+                "autoHide",
+                "islandOffset",
                 "ollamaUrl",
                 "lmstudioUrl",
                 "customUrl",

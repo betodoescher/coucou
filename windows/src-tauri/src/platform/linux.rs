@@ -509,6 +509,12 @@ fn start_pointer_watch() {
     });
 }
 
+/// Whether the user can drag the island around. A layer surface is placed by
+/// the compositor, anchored to the top edge.
+pub fn island_movable() -> bool {
+    !LAYER_SURFACE.load(Ordering::Relaxed)
+}
+
 /// Puts the layer surface on the display whose logical origin is (`x`, `y`).
 ///
 /// A layer surface ignores `set_position`: without an explicit output the

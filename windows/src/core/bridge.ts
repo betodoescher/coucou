@@ -31,6 +31,8 @@ export interface BootInfo {
   hookPath: string;
   /** False where the OS has no global cursor (Wayland): see Island.followPageCursor. */
   cursorPoll: boolean;
+  /** The open island can be dragged by its background (not on a layer shell). */
+  islandMovable: boolean;
 }
 
 /** The phone link (src-tauri/src/phone_link): how it is, never its secrets. */
@@ -200,6 +202,12 @@ export const Bridge = {
   focusWindow: (focused: boolean) => call<void>("focus_window", { focused }),
 
   reposition: () => call<void>("reposition"),
+  /** One drag step, in logical pixels. */
+  moveIsland: (dx: number, dy: number) => call<void>("move_island", { dx, dy }),
+  /** End of a drag: Rust keeps where the island was dropped. */
+  saveIslandPosition: () => call<void>("save_island_position"),
+  /** Back to the top centre. */
+  resetIslandPosition: () => call<void>("reset_island_position"),
   fitZoom: (dpr: number) => call<boolean>("fit_zoom", { dpr }),
 
   /** Displays the island can be pinned to: `key` is what `settings.screen` stores. */

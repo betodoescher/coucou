@@ -5136,6 +5136,72 @@
    "pt-BR": "Clima indisponível",
    "ru": "Погода недоступна",
    "id": "Cuaca tidak tersedia"
+  },
+  "Auto-hide": {
+   "zh-Hans": "自动隐藏",
+   "hi": "अपने-आप छिपाएँ",
+   "es": "Ocultar automáticamente",
+   "ar": "إخفاء تلقائي",
+   "fr": "Masquage auto",
+   "bn": "স্বয়ংক্রিয়ভাবে লুকান",
+   "pt-BR": "Ocultar automaticamente",
+   "ru": "Автоскрытие",
+   "id": "Sembunyikan otomatis"
+  },
+  "the compact island hides after a minute": {
+   "zh-Hans": "紧凑岛一分钟后隐藏",
+   "hi": "छोटा आइलैंड एक मिनट बाद छिप जाता है",
+   "es": "la isla compacta se oculta tras un minuto",
+   "ar": "تختفي الجزيرة المصغّرة بعد دقيقة",
+   "fr": "l’île compacte se masque au bout d’une minute",
+   "bn": "ছোট আইল্যান্ড এক মিনিট পর লুকিয়ে যায়",
+   "pt-BR": "a ilha compacta some depois de um minuto",
+   "ru": "компактный остров скрывается через минуту",
+   "id": "pulau ringkas tersembunyi setelah satu menit"
+  },
+  "Position": {
+   "zh-Hans": "位置",
+   "hi": "स्थिति",
+   "es": "Posición",
+   "ar": "الموضع",
+   "fr": "Position",
+   "bn": "অবস্থান",
+   "pt-BR": "Posição",
+   "ru": "Положение",
+   "id": "Posisi"
+  },
+  "Move back to the top": {
+   "zh-Hans": "移回顶部",
+   "hi": "वापस ऊपर ले जाएँ",
+   "es": "Volver arriba",
+   "ar": "إعادتها إلى الأعلى",
+   "fr": "Remettre en haut",
+   "bn": "আবার উপরে নিন",
+   "pt-BR": "Voltar para o topo",
+   "ru": "Вернуть наверх",
+   "id": "Kembalikan ke atas"
+  },
+  "drag the open island by its background to move it": {
+   "zh-Hans": "拖动打开的岛的背景即可移动它",
+   "hi": "खुले आइलैंड को उसकी पृष्ठभूमि से खींचकर हिलाएँ",
+   "es": "arrastra la isla abierta por su fondo para moverla",
+   "ar": "اسحب الجزيرة المفتوحة من خلفيتها لتحريكها",
+   "fr": "faites glisser l’île ouverte par son fond pour la déplacer",
+   "bn": "খোলা আইল্যান্ডের পটভূমি টেনে সরান",
+   "pt-BR": "arraste a ilha aberta pelo fundo para movê-la",
+   "ru": "перетащите открытый остров за фон, чтобы переместить его",
+   "id": "seret latar pulau yang terbuka untuk memindahkannya"
+  },
+  "Move island back to the top": {
+   "zh-Hans": "将岛移回顶部",
+   "hi": "आइलैंड को वापस ऊपर ले जाएँ",
+   "es": "Devolver la isla arriba",
+   "ar": "إعادة الجزيرة إلى الأعلى",
+   "fr": "Remettre l’île en haut",
+   "bn": "আইল্যান্ড আবার উপরে নিন",
+   "pt-BR": "Voltar a ilha para o topo",
+   "ru": "Вернуть остров наверх",
+   "id": "Kembalikan pulau ke atas"
   }
  }
 }

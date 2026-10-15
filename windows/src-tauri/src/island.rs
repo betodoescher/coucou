@@ -362,8 +362,16 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let offset = saved_offset(app).filter(|_| platform::island_movable());
+    let (x, y) = match offset {
+        Some(off) => {
+            let (ox, oy) = clamp_offset(off, (ms.width as f64 / scale, ms.height as f64 / scale));
+            // The wake strip sits centred under where the panel's top edge is.
+            let ox = if collapsed { ox + (PANEL_W - STRIP_W) / 2.0 } else { ox };
+            (mp.x + (ox * scale).round() as i32, mp.y + (oy * scale).round() as i32)
+        }
+        None => (mp.x + (ms.width as i32 - pw as i32) / 2, mp.y),
+    };
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -392,6 +400,41 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
             let _ = win.set_position(PhysicalPosition::new(x, y));
         }
     }
+}
+
+fn saved_offset(app: &AppHandle) -> Option<(f64, f64)> {
+    app.try_state::<crate::Shared>()?.settings.lock().unwrap().island_offset
+}
+
+/// Keeps the whole panel on a screen of `screen` logical size, so a position
+/// saved on a bigger display never leaves the island out of reach.
+pub fn clamp_offset((x, y): (f64, f64), (w, h): (f64, f64)) -> (f64, f64) {
+    (x.clamp(0.0, (w - PANEL_W).max(0.0)), y.clamp(0.0, (h - PANEL_H).max(0.0)))
+}
+
+/// Moves the island by a drag step in logical pixels.
+pub fn move_by(app: &AppHandle, dx: f64, dy: f64) {
+    if !platform::island_movable() {
+        return;
+    }
+    let Some(win) = window(app) else { return };
+    let Ok(pos) = win.outer_position() else { return };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let x = pos.x + (dx * scale).round() as i32;
+    let y = pos.y + (dy * scale).round() as i32;
+    let _ = win.set_position(PhysicalPosition::new(x, y));
+}
+
+/// The panel's current top-left as an offset on its display, clamped.
+pub fn current_offset(app: &AppHandle, pref: &str) -> Option<(f64, f64)> {
+    let win = window(app)?;
+    let pos = win.outer_position().ok()?;
+    let m = target_monitor(app, pref)?;
+    let scale = m.scale_factor();
+    let mp = m.position();
+    let ms = m.size();
+    let off = ((pos.x - mp.x) as f64 / scale, (pos.y - mp.y) as f64 / scale);
+    Some(clamp_offset(off, (ms.width as f64 / scale, ms.height as f64 / scale)))
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here
